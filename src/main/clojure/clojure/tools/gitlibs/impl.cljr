@@ -409,3 +409,98 @@
     (when-not (zero? exit)
       (throw (ex-info (format "Unable to get tags %s%n%s" git-dir err) ret)))
     (remove str/blank? (str/split-lines out))))
+
+;; Git wrapper functions for testing
+;; These functions are used by test scenarios to control git behavior
+
+(defn git-wrapper-read-command
+  "Reads a command from stdin in EDN format."
+  []
+  (when-let [line (read-line)]
+    (clojure.edn/read-string line)))
+
+(defn git-wrapper-send-event
+  "Sends an event to stdout in EDN format."
+  [event]
+  (println (pr-str event))
+  (flush))
+
+(defn git-wrapper-send-response
+  "Sends a response to a specific command ID."
+  [id response]
+  (git-wrapper-send-event (assoc response :id id)))
+
+(defn scenario-1-git-wrapper
+  "Git wrapper for scenario 1 tests (we won the race).
+   Simply delegates to real git since we control the test from outside."
+  [& args]
+  (let [git-cmd (str/join " " args)
+        event-id (hash git-cmd)]
+    ;; Send event about git command
+    (git-wrapper-send-event {:id event-id :git-cmd git-cmd :type :start})
+    
+    ;; Wait for instructions from test
+    (when-let [instruction (git-wrapper-read-command)]
+      (case (:op instruction)
+        :continue
+        (do
+          ;; Execute real git command
+          (let [result (apply run-git args)]
+            (git-wrapper-send-event {:id event-id :type :complete :result result})
+            (Environment/Exit (:exit result))))
+        
+        :exit
+        (do
+          (git-wrapper-send-event {:id event-id :type :exit :status (:status instruction)})
+          (Environment/Exit (:status instruction)))
+        
+        :stall-seconds
+        (do
+          (Thread/Sleep (* 1000 (:duration instruction)))
+          (let [result (apply run-git args)]
+            (git-wrapper-send-event {:id event-id :type :complete :result result})
+            (Environment/Exit (:exit result))))))))
+
+(defn scenario-3-git-wrapper
+  "Git wrapper for scenario 3 tests (we lost the race, waiting for cloner).
+   This wrapper can simulate slow clones and failures."
+  [& args]
+  (let [git-cmd (str/join " " args)
+        event-id (hash git-cmd)]
+    ;; Send event about git command
+    (git-wrapper-send-event {:id event-id :git-cmd git-cmd :type :start})
+    
+    ;; Wait for instructions from test
+    (when-let [instruction (git-wrapper-read-command)]
+      (case (:op instruction)
+        :continue
+        (do
+          ;; Execute real git command
+          (let [result (apply run-git args)]
+            (git-wrapper-send-event {:id event-id :type :complete :result result})
+            (Environment/Exit (:exit result))))
+        
+        :exit
+        (do
+          (git-wrapper-send-event {:id event-id :type :exit :status (:status instruction)})
+          (Environment/Exit (:status instruction)))
+        
+        :stall-seconds
+        (do
+          (Thread/Sleep (* 1000 (:duration instruction)))
+          (let [result (apply run-git args)]
+            (git-wrapper-send-event {:id event-id :type :complete :result result})
+            (Environment/Exit (:exit result))))
+        
+        :fake-clone
+        (do
+          ;; Create a fake git clone (directory structure without actual clone)
+          (let [target-dir (:target-dir instruction)]
+            (when target-dir
+              (when-not (Directory/Exists target-dir)
+                (Directory/CreateDirectory target-dir))
+              ;; Create a minimal config file to simulate successful clone
+              (let [config-path (Path/Join target-dir "config")]
+                (System.IO.File/WriteAllText config-path "[core]\n\trepositoryformatversion = 0\n")))
+            (git-wrapper-send-event {:id event-id :type :complete :fake true})
+            (Environment/Exit 0)))))))
