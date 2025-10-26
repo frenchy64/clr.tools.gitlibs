@@ -66,7 +66,7 @@
 (defn- create-temp-gitlibs-dir
   "Creates a temporary gitlibs directory for test isolation."
   []
-  (let [temp-dir (Path/Join (Path/GetTempPath) (str "gitlibs-test-" (DateTime/Now.Ticks)))]
+  (let [temp-dir (Path/Join (Path/GetTempPath) (str "gitlibs-test-" (.Ticks (DateTime/Now))))]
     (Directory/CreateDirectory temp-dir)
     temp-dir))
 
@@ -88,19 +88,8 @@
   [gitlibs-dir url]
   (.FullName (cio/dir-info gitlibs-dir "_repos" (#'impl/clean-url url))))
 
-;; Git wrapper process management
-
-(defn- create-git-wrapper-script
-  "Creates a git wrapper shell script that calls our CLR git wrapper function."
-  [scenario-name]
-  (let [script-path (Path/Join (Path/GetTempPath) (str "git-wrapper-" scenario-name ".sh"))
-        wrapper-fn (str "clojure.tools.gitlibs.impl/" scenario-name "-git-wrapper")]
-    (File/WriteAllText script-path
-      (str "#!/bin/bash\n"
-           "cljr -M:test -e \"(require 'clojure.tools.gitlibs.impl) ("
-           wrapper-fn " \\\"$@\\\")\"\n"))
-    ;; Make executable (on Unix-like systems)
-    script-path))
+;; Mock git helpers using with-redefs
+;; No external processes needed - use atoms and promises for coordination
 
 ;; Scenario 1a: We won the race, delete lockfile when git dir deleted
 (deftest test-scenario-1a-won-race-deleted-gitdir
@@ -111,7 +100,6 @@
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)]
-      
       (try
         ;; Clean up
         (delete-file-if-exists lockfile)
@@ -153,7 +141,7 @@
         (finally
           ;; Cleanup temp directory
           (when (Directory/Exists temp-gitlibs)
-            (Directory/Delete temp-gitlibs true))))))))
+            (Directory/Delete temp-gitlibs true)))))))
 
 ;; Scenario 1b: We won the race, delete lockfile when git dir exists
 (deftest test-scenario-1b-won-race-gitdir-exists
@@ -300,3 +288,143 @@
 ;; process invocation issues. For now, using in-process tests with temp directory isolation.
 ;; Tests validate the core coordination logic without hitting the network by using
 ;; pre-created fake git directories.
+
+;; Scenario 3: Controlled git mock testing with with-redefs
+(deftest test-scenario-3-with-mock-git
+  (testing "Using with-redefs to control git behavior for coordination testing"
+    (let [test-url "https://github.com/clojure/spec.alpha.git"
+          temp-gitlibs (create-temp-gitlibs-dir)
+          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
+          lockfile (get-lockfile temp-gitlibs test-url)
+          config-file-path (get-config-file-path temp-gitlibs test-url)
+          git-dir-path (get-git-dir-path temp-gitlibs test-url)
+          mock-git (impl/make-mock-git-handler)]
+      
+      (try
+        ;; Clean up
+        (delete-file-if-exists lockfile)
+        (when (Directory/Exists git-dir-path)
+          (Directory/Delete git-dir-path true))
+        
+        ;; Configure mock git to create fake clone
+        (reset! (:response-fn mock-git)
+                (fn [event]
+                  {:op :fake-clone :target-dir git-dir-path}))
+        
+        ;; Use with-redefs to replace run-git-with-config with our mock
+        (let [result (with-redefs [impl/run-git-with-config (:handler mock-git)]
+                       (impl/ensure-git-dir test-config test-url))]
+          
+          ;; Should succeed with git dir path
+          (is (= git-dir-path result))
+          
+          ;; Git directory should exist
+          (is (File/Exists config-file-path))
+          
+          ;; Lock should be released
+          (is (not (File/Exists lockfile)))
+          
+          ;; Should have recorded git clone event
+          (is (= 1 (count @(:event-queue mock-git))))
+          (let [event (first @(:event-queue mock-git))]
+            (is (str/includes? (:git-cmd event) "clone"))))
+        
+        (finally
+          ;; Cleanup temp directory
+          (when (Directory/Exists temp-gitlibs)
+            (Directory/Delete temp-gitlibs true)))))))
+
+;; Scenario 4: Test concurrent clones with mock git
+(deftest test-scenario-4-concurrent-with-mock
+  (testing "Two concurrent clones with mock git - one clones, one waits"
+    (let [test-url "https://github.com/clojure/spec.alpha.git"
+          temp-gitlibs (create-temp-gitlibs-dir)
+          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
+          lockfile (get-lockfile temp-gitlibs test-url)
+          config-file-path (get-config-file-path temp-gitlibs test-url)
+          git-dir-path (get-git-dir-path temp-gitlibs test-url)
+          mock-git (impl/make-mock-git-handler)]
+      
+      (try
+        ;; Clean up
+        (delete-file-if-exists lockfile)
+        (when (Directory/Exists git-dir-path)
+          (Directory/Delete git-dir-path true))
+        
+        ;; Configure mock git to stall for 3 seconds then create fake clone
+        (reset! (:response-fn mock-git)
+                (fn [event]
+                  (Thread/Sleep 3000)
+                  {:op :fake-clone :target-dir git-dir-path}))
+        
+        ;; Start two concurrent clones
+        (let [results (atom [])
+              f1 (future
+                   (with-redefs [impl/run-git-with-config (:handler mock-git)]
+                     (swap! results conj (impl/ensure-git-dir test-config test-url))))
+              f2 (future
+                   (with-redefs [impl/run-git-with-config (:handler mock-git)]
+                     (Thread/Sleep 500)  ; Ensure f2 starts after f1
+                     (swap! results conj (impl/ensure-git-dir test-config test-url))))]
+          
+          ;; Wait for both to complete
+          (deref-timely f1 120000 "f1 timed out after 2 minutes")
+          (deref-timely f2 120000 "f2 timed out after 2 minutes")
+          
+          ;; Both should succeed with same git dir path
+          (is (= 2 (count @results)))
+          (is (= git-dir-path (first @results)))
+          (is (= git-dir-path (second @results)))
+          
+          ;; Git directory should exist
+          (is (File/Exists config-file-path))
+          
+          ;; Lock should be released
+          (is (not (File/Exists lockfile)))
+          
+          ;; Only one clone should have actually happened
+          (is (= 1 (count @(:event-queue mock-git)))))
+        
+        (finally
+          ;; Cleanup temp directory
+          (when (Directory/Exists temp-gitlibs)
+            (Directory/Delete temp-gitlibs true)))))))
+
+;; Scenario 5: Test clone failure with mock git
+(deftest test-scenario-5-clone-failure-with-mock
+  (testing "Clone failure with mock git - should clean up git dir and lock"
+    (let [test-url "https://github.com/clojure/spec.alpha.git"
+          temp-gitlibs (create-temp-gitlibs-dir)
+          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
+          lockfile (get-lockfile temp-gitlibs test-url)
+          config-file-path (get-config-file-path temp-gitlibs test-url)
+          git-dir-path (get-git-dir-path temp-gitlibs test-url)
+          mock-git (impl/make-mock-git-handler)]
+      
+      (try
+        ;; Clean up
+        (delete-file-if-exists lockfile)
+        (when (Directory/Exists git-dir-path)
+          (Directory/Delete git-dir-path true))
+        
+        ;; Configure mock git to fail
+        (reset! (:response-fn mock-git)
+                (fn [event]
+                  {:op :exit :status 1 :message "Mock git clone failed"}))
+        
+        ;; Try to clone - should fail
+        (is (thrown? Exception
+              (with-redefs [impl/run-git-with-config (:handler mock-git)]
+                (impl/ensure-git-dir test-config test-url))))
+        
+        ;; Git directory should NOT exist (cleaned up on failure)
+        (is (not (Directory/Exists git-dir-path)))
+        
+        ;; Lock should be released
+        (is (not (File/Exists lockfile)))
+        
+        (finally
+          ;; Cleanup temp directory
+          (when (Directory/Exists temp-gitlibs)
+            (Directory/Delete temp-gitlibs true)))))))
+
