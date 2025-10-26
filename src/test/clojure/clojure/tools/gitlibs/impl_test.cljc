@@ -242,13 +242,10 @@
           (#'impl/write-ts lockfile)
           
           ;; Verify git dir still doesn't exist - check BEFORE releasing lock
-          (println "DEBUG TEST: About to check config - lockfile exists?" (File/Exists lockfile))
-          (println "DEBUG TEST: About to check config - config exists?" (File/Exists config-file-path))
           (is (not (File/Exists config-file-path)) "Config file should not exist before we release lock")
           
           ;; Now release the lock
           (#'impl/release-lock lockfile)
-          (println "DEBUG TEST: Released lock")
           
           ;; Wait for waiter to complete
           (deref-timely waiter 30000 "Waiter timed out after 30 seconds")
