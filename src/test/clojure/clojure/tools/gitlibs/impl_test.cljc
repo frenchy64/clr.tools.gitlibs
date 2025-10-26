@@ -215,7 +215,8 @@
         (when (Directory/Exists git-dir-path)
           (Directory/Delete git-dir-path true))
         
-        (with-redefs [config/CONFIG (delay test-config)]
+        (with-redefs [config/CONFIG (delay test-config)
+                      impl/run-git handler]
           ;; We create the lock first (simulating that we "won the race")
           (is (#'impl/acquire-lock lockfile))
           (is (not (File/Exists config-file-path)))
@@ -225,7 +226,7 @@
           ;; it will find no git dir and throw
           (let [waiter-exception (atom nil)
                 waiter (future
-                         (with-redefs [impl/run-git handler]
+                         (with-redefs []
                            (try
                              (impl/ensure-git-dir test-url)
                              (catch Exception e
@@ -341,7 +342,8 @@
         (when (Directory/Exists git-dir-path)
           (Directory/Delete git-dir-path true))
         
-        (with-redefs [config/CONFIG (delay test-config)]
+        (with-redefs [config/CONFIG (delay test-config)
+                      impl/run-git handler]
           ;; We create the lock first
           (is (#'impl/acquire-lock lockfile))
           (is (not (File/Exists config-file-path)))
@@ -349,7 +351,7 @@
           ;; Start a waiter thread
           (let [waiter-exception (atom nil)
                 waiter (future
-                         (with-redefs [impl/run-git handler]
+                         (with-redefs []
                            (try
                              (impl/ensure-git-dir test-url)
                              (catch Exception e
