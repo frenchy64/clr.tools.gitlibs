@@ -442,7 +442,7 @@
         
         ;; Use with-redefs to replace run-git-with-config with our mock
         (let [result (with-redefs [impl/run-git (:handler mock-git)]
-                       (impl/ensure-git-dir test-config test-url))]
+                       (impl/ensure-git-dir test-url))]
           
           ;; Should succeed with git dir path
           (is (= git-dir-path result))
