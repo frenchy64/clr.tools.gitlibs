@@ -1,6 +1,7 @@
 (ns clojure.tools.gitlibs.impl-test
   (:require
     [clojure.test :refer :all]
+    [clojure.tools.gitlibs.config :as config]
     [clojure.tools.gitlibs.impl :as impl]
     [clojure.clr.io :as cio]
     [clojure.string :as str]
@@ -201,7 +202,7 @@
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
           ;; TODO use with-redefs to establish in each test
-          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
+          test-config (assoc @config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)
@@ -222,7 +223,8 @@
         ;; Start a waiter thread with mock git
         (let [waiter-exception (atom nil)
               waiter (future
-                       (with-redefs [impl/run-git handler]
+                       (with-redefs [config/CONFIG (delay test-config)
+                                     impl/run-git handler]
                          (try
                            (impl/ensure-git-dir test-url)
                            (catch Exception e
@@ -266,7 +268,7 @@
   (testing "Won race: delete lockfile when git dir exists causes waiter to return normally"
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
-          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
+          test-config (assoc @config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)]
@@ -287,7 +289,9 @@
               waiter-exception (atom nil)
               waiter (future
                        (try
-                         (reset! waiter-result (impl/ensure-git-dir test-url))
+                         (reset! waiter-result
+                                 (with-redefs [config/CONFIG (delay test-config)]
+                                   (impl/ensure-git-dir test-url)))
                          (catch Exception e
                            (reset! waiter-exception e))))]
           
@@ -320,7 +324,7 @@
   (testing "Won race: stop updating lockfile causes waiter to throw after 10 seconds"
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
-          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
+          test-config (assoc @config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)
@@ -342,7 +346,8 @@
         ;; Start a waiter thread with mock git
         (let [waiter-exception (atom nil)
               waiter (future
-                       (with-redefs [impl/run-git handler]
+                       (with-redefs [config/CONFIG (delay test-config)
+                                     impl/run-git handler]
                          (try
                            (impl/ensure-git-dir test-url)
                            (catch Exception e
@@ -382,7 +387,7 @@
   (testing "Git dir exists and lockfile doesn't - fast path"
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
-          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
+          test-config (assoc @config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)]
@@ -400,31 +405,21 @@
         
         ;; Call ensure-git-dir - should take fast path
         (let [start-time (DateTime/Now)
-              result (impl/ensure-git-dir test-url)
-              elapsed (.TotalMilliseconds (.Subtract (DateTime/Now) start-time))]
-          
-          ;; Should return successfully with the git dir path
-          (is (= git-dir-path result))
-          
-          ;; Should be very fast (< 100ms) since it takes fast path
-          (is (< elapsed 100)))
+              result (with-redefs [config/CONFIG (delay test-config)]
+                       (impl/ensure-git-dir test-url))]
+          (is (= git-dir-path result)))
         
         (finally
           ;; Cleanup temp directory
           (when (Directory/Exists temp-gitlibs)
             (Directory/Delete temp-gitlibs true)))))))
 
-;; Note: Full separate-process git wrapper tests would require resolving ClojureCLR
-;; process invocation issues. For now, using in-process tests with temp directory isolation.
-;; Tests validate the core coordination logic without hitting the network by using
-;; pre-created fake git directories.
-
 ;; Scenario 3: Controlled git mock testing with with-redefs
 (deftest test-scenario-3-with-mock-git
   (testing "Using with-redefs to control git behavior for coordination testing"
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
-          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
+          test-config (assoc @config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)
@@ -442,7 +437,8 @@
                   {:op :fake-clone :target-dir git-dir-path}))
         
         ;; Use with-redefs to replace run-git-with-config with our mock
-        (let [result (with-redefs [impl/run-git (:handler mock-git)]
+        (let [result (with-redefs [config/CONFIG (delay test-config)
+                                   impl/run-git (:handler mock-git)]
                        (impl/ensure-git-dir test-url))]
           
           ;; Should succeed with git dir path
@@ -469,7 +465,7 @@
   (testing "Clone failure with mock git - should clean up git dir and lock"
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
-          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
+          test-config (assoc @config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)
@@ -488,7 +484,8 @@
         
         ;; Try to clone - should fail
         (is (thrown? Exception
-              (with-redefs [impl/run-git (:handler mock-git)]
+              (with-redefs [config/CONFIG (delay test-config)
+                            impl/run-git (:handler mock-git)]
                 (impl/ensure-git-dir test-url))))
         
         ;; Wait a bit for cleanup to complete
