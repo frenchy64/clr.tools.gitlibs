@@ -203,8 +203,12 @@
           test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
-          git-dir-path (get-git-dir-path temp-gitlibs test-url)]
+          git-dir-path (get-git-dir-path temp-gitlibs test-url)
+          {:keys [handler event-queue response-fn]} (make-mock-git-handler)]
       (try
+        ;; Set up mock git to fake clone
+        (reset! response-fn (fn [_] {:op :fake-clone}))
+        
         ;; Clean up
         (delete-file-if-exists lockfile)
         (when (Directory/Exists git-dir-path)
@@ -214,13 +218,14 @@
         (is (#'impl/acquire-lock lockfile))
         (is (not (File/Exists config-file-path)))
         
-        ;; Start a waiter thread
+        ;; Start a waiter thread with mock git
         (let [waiter-exception (atom nil)
               waiter (future
-                       (try
-                         (impl/ensure-git-dir test-config test-url)
-                         (catch Exception e
-                           (reset! waiter-exception e))))]
+                       (with-redefs [impl/run-git-with-config handler]
+                         (try
+                           (impl/ensure-git-dir test-config test-url)
+                           (catch Exception e
+                             (reset! waiter-exception e)))))]
           
           ;; Give waiter time to start waiting and verify it's waiting by checking
           ;; if the lockfile timestamp is being updated by the waiter
@@ -236,9 +241,14 @@
           (Thread/Sleep 1000)
           (#'impl/write-ts lockfile)
           
-          ;; Verify git dir still doesn't exist and delete lock
-          (is (not (File/Exists config-file-path)))
+          ;; Verify git dir still doesn't exist - check BEFORE releasing lock
+          (println "DEBUG TEST: About to check config - lockfile exists?" (File/Exists lockfile))
+          (println "DEBUG TEST: About to check config - config exists?" (File/Exists config-file-path))
+          (is (not (File/Exists config-file-path)) "Config file should not exist before we release lock")
+          
+          ;; Now release the lock
           (#'impl/release-lock lockfile)
+          (println "DEBUG TEST: Released lock")
           
           ;; Wait for waiter to complete
           (deref-timely waiter 30000 "Waiter timed out after 30 seconds")
@@ -315,9 +325,13 @@
           test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
-          git-dir-path (get-git-dir-path temp-gitlibs test-url)]
+          git-dir-path (get-git-dir-path temp-gitlibs test-url)
+          {:keys [handler event-queue response-fn]} (make-mock-git-handler)]
       
       (try
+        ;; Set up mock git to fake clone (in case waiter tries to clone)
+        (reset! response-fn (fn [_] {:op :fake-clone}))
+        
         ;; Clean up
         (delete-file-if-exists lockfile)
         (when (Directory/Exists git-dir-path)
@@ -327,13 +341,14 @@
         (is (#'impl/acquire-lock lockfile))
         (is (not (File/Exists config-file-path)))
         
-        ;; Start a waiter thread
+        ;; Start a waiter thread with mock git
         (let [waiter-exception (atom nil)
               waiter (future
-                       (try
-                         (impl/ensure-git-dir test-config test-url)
-                         (catch Exception e
-                           (reset! waiter-exception e))))]
+                       (with-redefs [impl/run-git-with-config handler]
+                         (try
+                           (impl/ensure-git-dir test-config test-url)
+                           (catch Exception e
+                             (reset! waiter-exception e)))))]
           
           ;; Give waiter time to start waiting and verify it's waiting
           (Thread/Sleep 2000)

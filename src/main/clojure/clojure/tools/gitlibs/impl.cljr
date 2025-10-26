@@ -240,6 +240,7 @@
    (clone-with-timestamp-updates @config/CONFIG url git-dir lockfile timeout-seconds))
   ([config url ^DirectoryInfo git-dir ^String lockfile timeout-seconds]
    (printerrln "Cloning:" url)
+   (printerrln (apply str (interpose "\n" (map str (.GetFrames (System.Diagnostics.StackTrace. true))))))
    (let [git-path (.FullName git-dir)
          ;; Start the git clone in a future so we can update timestamps
          clone-future (future
@@ -304,13 +305,31 @@
    Throws if the lock file timestamp expires or if git dir doesn't exist after lock is released."
   [^String config-file-path ^String lockfile timeout-seconds]
   (loop []
-    (when-not (System.IO.File/Exists config-file-path)
-      (write-ts lockfile)
-      (if (timestamp-expired? lockfile timeout-seconds)
-        (throw (ex-info "Cloner process dead (lock expired)" {}))
+    (cond
+      ;; Clone completed successfully
+      (System.IO.File/Exists config-file-path)
+      nil
+      
+      ;; Lock file removed - cloner finished (successfully or not)
+      (not (System.IO.File/Exists lockfile))
+      nil
+      
+      ;; Lock file expired - cloner is dead
+      (timestamp-expired? lockfile timeout-seconds)
+      (throw (ex-info "Cloner process dead (lock expired)" {}))
+      
+      ;; Still waiting - update timestamp and continue
+      ;; NOTE: We must check lockfile exists again before writing, because
+      ;; write-ts will create the file if it doesn't exist, which would cause
+      ;; us to recreate a lock that was just released
+      :else
+      (if (System.IO.File/Exists lockfile)
         (do
+          (write-ts lockfile)
           (Thread/Sleep 1000)
-          (recur)))))
+          (recur))
+        ;; Lockfile was deleted while we were checking - exit loop
+        nil)))
   ;; After lock is released, verify the git dir was successfully created
   (when-not (System.IO.File/Exists config-file-path)
     (throw (ex-info "Clone failed - git directory not created" {}))))
@@ -339,27 +358,29 @@
          timeout-seconds 10]
      ;; Fast path: if config exists and no lock file, we're done
      (if (and (.Exists config-file) (not (System.IO.File/Exists lockfile)))
-       (.FullName git-dir-file)
+       (do
+         (.FullName git-dir-file))
        ;; Otherwise, coordinate the clone
        (if (acquire-lock lockfile)
          ;; We acquired the lock - we are responsible for cloning
-         (let [success? (atom false)]
-           (try
-             (when-not (.Exists config-file)
-               (clone-with-timestamp-updates config url git-dir-file lockfile timeout-seconds))
-             (reset! success? true)
-             (.FullName git-dir-file)
-             (catch Exception e
-               ;; On exception, delete git dir first
-               (when (.Exists git-dir-file)
-                 (try
-                   (Directory/Delete (.FullName git-dir-file) true)
-                   (catch Exception _)))
-               (throw e))
-             (finally
-               ;; Always release lock, but only if we didn't succeed should git dir be deleted
-               ;; (git dir deletion happens in catch block before we get here)
-               (release-lock lockfile))))
+         (do
+           (let [success? (atom false)]
+             (try
+               (when-not (.Exists config-file)
+                 (clone-with-timestamp-updates config url git-dir-file lockfile timeout-seconds))
+               (reset! success? true)
+               (.FullName git-dir-file)
+               (catch Exception e
+                 ;; On exception, delete git dir first
+                 (when (.Exists git-dir-file)
+                   (try
+                     (Directory/Delete (.FullName git-dir-file) true)
+                     (catch Exception _)))
+                 (throw e))
+               (finally
+                 ;; Always release lock, but only if we didn't succeed should git dir be deleted
+                 ;; (git dir deletion happens in catch block before we get here)
+                 (release-lock lockfile)))))
          ;; Another process holds the lock - wait for clone to complete
          (do
            (when (:gitlibs/debug config)
