@@ -223,7 +223,7 @@
               waiter (future
                        (with-redefs [impl/run-git handler]
                          (try
-                           (impl/ensure-git-dir test-config test-url)
+                           (impl/ensure-git-dir test-url)
                            (catch Exception e
                              (reset! waiter-exception e)))))]
           
