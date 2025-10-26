@@ -160,7 +160,7 @@
         events (atom [])]
     {:instruction-promise instruction-promise
      :events events
-     :handler (fn [config args]
+     :handler (fn [& args]
                 (let [git-cmd (str/join " " args)
                       event {:git-cmd git-cmd :args args}]
                   (swap! events conj event)
