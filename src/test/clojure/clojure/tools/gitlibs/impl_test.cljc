@@ -204,56 +204,61 @@
           test-config (assoc @config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
-          git-dir-path (get-git-dir-path temp-gitlibs test-url)]
+          git-dir-path (get-git-dir-path temp-gitlibs test-url)
+          {:keys [handler event-queue response-fn]} (make-mock-git-handler)]
       (try
+        ;; Set up mock git to prevent any real git operations
+        (reset! response-fn (fn [_] {:op :fake-clone}))
+        
         ;; Clean up
         (delete-file-if-exists lockfile)
         (when (Directory/Exists git-dir-path)
           (Directory/Delete git-dir-path true))
         
-        ;; We create the lock first (simulating that we "won the race")
-        (is (#'impl/acquire-lock lockfile))
-        (is (not (File/Exists config-file-path)))
-        
-        ;; Start a waiter thread that will wait for the lock
-        ;; When it gets the lock and tries to verify clone completion,
-        ;; it will find no git dir and throw
-        (let [waiter-exception (atom nil)
-              waiter (future
-                       (with-redefs [config/CONFIG (delay test-config)]
-                         (try
-                           (impl/ensure-git-dir test-url)
-                           (catch Exception e
-                             (reset! waiter-exception e)))))]
+        (with-redefs [config/CONFIG (delay test-config)]
+          ;; We create the lock first (simulating that we "won the race")
+          (is (#'impl/acquire-lock lockfile))
+          (is (not (File/Exists config-file-path)))
           
-          ;; Give waiter time to start waiting and verify it's waiting by checking
-          ;; if the lockfile timestamp is being updated by the waiter
-          (Thread/Sleep 2000)
-          (let [ts1 (#'impl/read-ts lockfile)]
-            (Thread/Sleep 1500)
-            (let [ts2 (#'impl/read-ts lockfile)]
-              ;; If waiter is updating, ts2 should be after ts1
-              (is (or (nil? ts1) (nil? ts2) (.CompareTo ts2 ts1)))))
-          
-          ;; Update timestamp a couple more times to keep it alive
-          (#'impl/write-ts lockfile)
-          (Thread/Sleep 1000)
-          (#'impl/write-ts lockfile)
-          
-          ;; Verify git dir still doesn't exist - check BEFORE releasing lock
-          (is (not (File/Exists config-file-path)) "Config file should not exist before we release lock")
-          
-          ;; Now release the lock WITHOUT creating the git directory
-          ;; This simulates a failed clone scenario
-          (#'impl/release-lock lockfile)
-          
-          ;; Wait for waiter to complete
-          (deref-timely waiter 30000 "Waiter timed out after 30 seconds")
-          
-          ;; Should have thrown exception about clone failed
-          (is (some? @waiter-exception))
-          (when @waiter-exception
-            (is (str/includes? (.Message @waiter-exception) "Clone failed"))))
+          ;; Start a waiter thread that will wait for the lock
+          ;; When it gets the lock and tries to verify clone completion,
+          ;; it will find no git dir and throw
+          (let [waiter-exception (atom nil)
+                waiter (future
+                         (with-redefs [impl/run-git handler]
+                           (try
+                             (impl/ensure-git-dir test-url)
+                             (catch Exception e
+                               (reset! waiter-exception e)))))]
+            
+            ;; Give waiter time to start waiting and verify it's waiting by checking
+            ;; if the lockfile timestamp is being updated by the waiter
+            (Thread/Sleep 2000)
+            (let [ts1 (#'impl/read-ts lockfile)]
+              (Thread/Sleep 1500)
+              (let [ts2 (#'impl/read-ts lockfile)]
+                ;; If waiter is updating, ts2 should be after ts1
+                (is (or (nil? ts1) (nil? ts2) (.CompareTo ts2 ts1)))))
+            
+            ;; Update timestamp a couple more times to keep it alive
+            (#'impl/write-ts lockfile)
+            (Thread/Sleep 1000)
+            (#'impl/write-ts lockfile)
+            
+            ;; Verify git dir still doesn't exist - check BEFORE releasing lock
+            (is (not (File/Exists config-file-path)) "Config file should not exist before we release lock")
+            
+            ;; Now release the lock WITHOUT creating the git directory
+            ;; This simulates a failed clone scenario
+            (#'impl/release-lock lockfile)
+            
+            ;; Wait for waiter to complete
+            (deref-timely waiter 30000 "Waiter timed out after 30 seconds")
+            
+            ;; Should have thrown exception about clone failed
+            (is (some? @waiter-exception))
+            (when @waiter-exception
+              (is (str/includes? (.Message @waiter-exception) "Clone failed")))))
         
         (finally
           ;; Cleanup temp directory
@@ -336,43 +341,43 @@
         (when (Directory/Exists git-dir-path)
           (Directory/Delete git-dir-path true))
         
-        ;; We create the lock first
-        (is (#'impl/acquire-lock lockfile))
-        (is (not (File/Exists config-file-path)))
-        
-        ;; Start a waiter thread with mock git
-        (let [waiter-exception (atom nil)
-              waiter (future
-                       (with-redefs [config/CONFIG (delay test-config)
-                                     impl/run-git handler]
-                         (try
-                           (impl/ensure-git-dir test-url)
-                           (catch Exception e
-                             (reset! waiter-exception e)))))]
+        (with-redefs [config/CONFIG (delay test-config)]
+          ;; We create the lock first
+          (is (#'impl/acquire-lock lockfile))
+          (is (not (File/Exists config-file-path)))
           
-          ;; Give waiter time to start waiting and verify it's waiting
-          (Thread/Sleep 2000)
-          (let [ts1 (#'impl/read-ts lockfile)]
-            (Thread/Sleep 1500)
-            (let [ts2 (#'impl/read-ts lockfile)]
-              ;; If waiter is updating, ts2 should be after ts1
-              (is (or (nil? ts1) (nil? ts2) (.CompareTo ts2 ts1)))))
-          
-          ;; Update timestamp once to keep it alive initially
-          (#'impl/write-ts lockfile)
-          (Thread/Sleep 1000)
-          
-          ;; Now STOP updating - waiter should detect expiry after 10 seconds
-          ;; Wait for waiter to complete (should timeout and throw)
-          (deref-timely waiter 15000 "Waiter didn't timeout as expected after 15 seconds")
-          
-          ;; Clean up lock
-          (#'impl/release-lock lockfile)
-          
-          ;; Should have thrown exception about lock expired
-          (is (some? @waiter-exception))
-          (when @waiter-exception
-            (is (str/includes? (.Message @waiter-exception) "lock expired"))))
+          ;; Start a waiter thread
+          (let [waiter-exception (atom nil)
+                waiter (future
+                         (with-redefs [impl/run-git handler]
+                           (try
+                             (impl/ensure-git-dir test-url)
+                             (catch Exception e
+                               (reset! waiter-exception e)))))]
+            
+            ;; Give waiter time to start waiting and verify it's waiting
+            (Thread/Sleep 2000)
+            (let [ts1 (#'impl/read-ts lockfile)]
+              (Thread/Sleep 1500)
+              (let [ts2 (#'impl/read-ts lockfile)]
+                ;; If waiter is updating, ts2 should be after ts1
+                (is (or (nil? ts1) (nil? ts2) (.CompareTo ts2 ts1)))))
+            
+            ;; Update timestamp once to keep it alive initially
+            (#'impl/write-ts lockfile)
+            (Thread/Sleep 1000)
+            
+            ;; Now STOP updating - waiter should detect expiry after 10 seconds
+            ;; Wait for waiter to complete (should timeout and throw)
+            (deref-timely waiter 15000 "Waiter didn't timeout as expected after 15 seconds")
+            
+            ;; Clean up lock
+            (#'impl/release-lock lockfile)
+            
+            ;; Should have thrown exception about lock expired
+            (is (some? @waiter-exception))
+            (when @waiter-exception
+              (is (str/includes? (.Message @waiter-exception) "lock expired")))))
         
         (finally
           ;; Cleanup temp directory
