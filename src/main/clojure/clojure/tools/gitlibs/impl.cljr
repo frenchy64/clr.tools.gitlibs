@@ -207,6 +207,7 @@
   "Clones the repo to the target directory while updating the lock file timestamp every second.
    Throws if the timestamp expires or clone fails."
   [url ^DirectoryInfo git-dir ^String lockfile timeout-seconds]
+  (printerrln "Cloning:" url)
   (let [git-path (.FullName git-dir)
         proc-builder (doto (ProcessStartInfo. ^String (:gitlibs/command @config/CONFIG) 
                                               ^String (str "clone --quiet --mirror " url " " git-path))
@@ -241,9 +242,9 @@
   "Waits for the clone to complete by checking if the git dir config file exists.
    Updates the lock file timestamp every second while waiting.
    Throws if the lock file timestamp expires."
-  [^FileInfo config-file ^String lockfile timeout-seconds]
+  [config-file-path ^String lockfile timeout-seconds]
   (loop []
-    (when-not (.Exists config-file)
+    (when-not (System.IO.File/Exists config-file-path)
       (write-ts lockfile)
       (if (timestamp-expired? lockfile timeout-seconds)
         (throw (ex-info "Cloner process dead (lock expired)" {}))
@@ -268,6 +269,7 @@
   [url]
   (let [git-dir-file (git-dir url)
         config-file (cio/file-info git-dir-file "config")
+        config-file-path (.FullName config-file)
         lockfile (str (.FullName git-dir-file) ".lock")
         timeout-seconds 10]
     ;; Fast path: if config exists and no lock file, we're done
@@ -287,7 +289,7 @@
           (when (:gitlibs/debug @config/CONFIG)
             (printerrln "Waiting for another process to complete clone of:" url))
           (try
-            (wait-for-clone-completion config-file lockfile timeout-seconds)
+            (wait-for-clone-completion config-file-path lockfile timeout-seconds)
             (.FullName git-dir-file)
             (catch Exception e
               (throw e))))))))

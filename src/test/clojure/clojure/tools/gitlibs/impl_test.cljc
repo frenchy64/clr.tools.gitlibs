@@ -1,7 +1,12 @@
 (ns clojure.tools.gitlibs.impl-test
   (:require
     [clojure.test :refer :all]
-    [clojure.tools.gitlibs.impl :as impl]))
+    [clojure.tools.gitlibs.impl :as impl]
+    [clojure.clr.io :as cio])
+  (:import
+    [System DateTime]
+    [System.IO Directory DirectoryInfo File]
+    [System.Threading Thread ThreadStart]))
 
 (deftest test-clean-url
   (are [url expected-path]
@@ -32,3 +37,85 @@
 
     ;; git - unknown transport with url rewrite in gitconfig (unusual, but do something useful)
     "work:repo.git" "ssh/work/repo"))
+
+;; Test helpers for concurrent clone coordination
+
+(defn- delete-dir-recursive
+  "Recursively deletes a directory and all its contents."
+  [^DirectoryInfo dir]
+  (when (.Exists dir)
+    (Directory/Delete (.FullName dir) true)))
+
+(deftest test-concurrent-clone-coordination
+  (testing "Two racing processes - both should succeed and coordinate via lock"
+    (let [test-url "https://github.com/clojure/spec.alpha.git"
+          git-dir-file (impl/git-dir test-url)
+          lockfile (str (.FullName git-dir-file) ".lock")
+          results (atom [])]
+      
+      ;; Clean up any existing clone and lock file
+      (delete-dir-recursive git-dir-file)
+      (when (File/Exists lockfile)
+        (File/Delete lockfile))
+      
+      ;; Start two concurrent processes
+      (let [f1 (future
+                 (try
+                   (let [result (impl/ensure-git-dir test-url)]
+                     (swap! results conj {:process 1 :success true :result result}))
+                   (catch Exception e
+                     (swap! results conj {:process 1 :success false :error (.Message e)}))))
+            f2 (future
+                 (try
+                   (let [result (impl/ensure-git-dir test-url)]
+                     (swap! results conj {:process 2 :success true :result result}))
+                   (catch Exception e
+                     (swap! results conj {:process 2 :success false :error (.Message e)}))))]
+        
+        ;; Wait for both to complete
+        @f1
+        @f2
+        
+        ;; Both should succeed
+        (is (= 2 (count @results)))
+        (is (every? :success @results))
+        
+        ;; Git dir should exist with config file
+        (let [config-file (cio/file-info git-dir-file "config")]
+          (is (.Exists config-file)))
+        
+        ;; Lock file should be cleaned up
+        (is (not (File/Exists lockfile)))))))
+
+(deftest test-fast-path-after-successful-clone
+  (testing "Process running after successful clone takes fast path"
+    (let [test-url "https://github.com/clojure/spec.alpha.git"
+          git-dir-file (impl/git-dir test-url)
+          lockfile (str (.FullName git-dir-file) ".lock")
+          config-file (cio/file-info git-dir-file "config")]
+      
+      ;; Ensure clone exists from previous test or create it
+      (when-not (.Exists config-file)
+        (delete-dir-recursive git-dir-file)
+        (when (File/Exists lockfile)
+          (File/Delete lockfile))
+        (impl/ensure-git-dir test-url))
+      
+      ;; Verify config exists and no lock file
+      (is (.Exists config-file))
+      (is (not (File/Exists lockfile)))
+      
+      ;; Now call ensure-git-dir again - should take fast path
+      (let [start-time (DateTime/Now)
+            result (impl/ensure-git-dir test-url)
+            elapsed (.TotalMilliseconds (.Subtract (DateTime/Now) start-time))]
+        
+        ;; Should return successfully
+        (is result)
+        (is (= (.FullName git-dir-file) result))
+        
+        ;; Should be very fast (< 100ms) since it takes fast path
+        (is (< elapsed 100))
+        
+        ;; No lock file should have been created
+        (is (not (File/Exists lockfile)))))))
