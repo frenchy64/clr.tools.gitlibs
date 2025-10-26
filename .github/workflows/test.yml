@@ -1,0 +1,21 @@
+name: ClojureCLR Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Leiningen
+        run: |
+          choco install leiningen -y
+          echo "$HOME/.lein" >> $GITHUB_PATH
+
+      - name: Run ClojureCLR tests
+        run: lein test
