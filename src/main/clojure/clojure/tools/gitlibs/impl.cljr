@@ -42,10 +42,9 @@
        (.Start))                                                                                           ;;; .start
      result#))
 
-(defn run-git-with-config
-  "Internal function that runs git with the given config and args."
-  [config args]
-  (let [{:gitlibs/keys [command debug terminal]} config
+(defn- run-git
+  [& args]
+  (let [{:gitlibs/keys [command debug terminal]} @config/CONFIG
         command-args (cons command args)]
     (when debug
       (apply printerrln command-args))
