@@ -8,14 +8,16 @@ on:
 
 jobs:
   test:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Leiningen
         run: |
-          choco install leiningen -y
-          echo "$HOME/.lein" >> $GITHUB_PATH
+          curl -O https://raw.githubusercontent.com/technomancy/leiningen/stable/bin/lein
+          chmod +x lein
+          sudo mv lein /usr/local/bin/lein
+          lein --version
 
       - name: Run ClojureCLR tests
-        run: lein test
+        run: lein clr test
