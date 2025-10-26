@@ -110,7 +110,7 @@
         response-fn (atom (fn [_] {:op :continue}))]
     {:event-queue event-queue
      :response-fn response-fn
-     :handler (fn [config args]
+     :handler (fn [& args]
                 (let [git-cmd (str/join " " args)
                       event {:git-cmd git-cmd :args args :config config}
                       event-id (count @event-queue)]
