@@ -112,7 +112,7 @@
      :response-fn response-fn
      :handler (fn [& args]
                 (let [git-cmd (str/join " " args)
-                      event {:git-cmd git-cmd :args args :config config}
+                      event {:git-cmd git-cmd :args args}
                       event-id (count @event-queue)]
                   ;; Record the event
                   (swap! event-queue conj event)
