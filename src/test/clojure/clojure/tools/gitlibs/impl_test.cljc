@@ -399,7 +399,7 @@
         
         ;; Call ensure-git-dir - should take fast path
         (let [start-time (DateTime/Now)
-              result (impl/ensure-git-dir test-config test-url)
+              result (impl/ensure-git-dir test-url)
               elapsed (.TotalMilliseconds (.Subtract (DateTime/Now) start-time))]
           
           ;; Should return successfully with the git dir path
