@@ -53,6 +53,14 @@
   (when (File/Exists path)
     (File/Delete path)))
 
+(defn- deref-timely
+  "Dereferences a future with a timeout. Throws if timed out."
+  [fut timeout-ms timeout-msg]
+  (let [result (deref fut timeout-ms ::timeout)]
+    (when (= result ::timeout)
+      (throw (Exception. timeout-msg)))
+    result))
+
 (defn- get-lockfile
   "Returns the lockfile path for a given URL."
   [url]
@@ -103,7 +111,7 @@
         (#'impl/release-lock lockfile)
         
         ;; Wait for waiter to complete
-        @waiter
+        (deref-timely waiter 30000 "Waiter timed out after 30 seconds")
         
         ;; Should have error about clone failed
         (is (map? @waiter-result))
@@ -149,11 +157,56 @@
         (#'impl/release-lock lockfile)
         
         ;; Wait for waiter to complete
-        @waiter
+        (deref-timely waiter 30000 "Waiter timed out after 30 seconds")
         
         ;; Should return successfully
         (is (string? @waiter-result))
         (is (= (.FullName git-dir-file) @waiter-result))))))
+
+;; Scenario 1c: We won the race and stop updating lockfile - waiter should timeout
+(deftest test-scenario-1c-won-race-lockfile-expires
+  (testing "Won race: stop updating lockfile causes waiter to throw after 10 seconds"
+    (let [test-url "https://github.com/clojure/spec.alpha.git"
+          git-dir-file (impl/git-dir test-url)
+          lockfile (get-lockfile test-url)
+          config-file-path (get-config-file-path test-url)]
+      
+      ;; Clean up
+      (delete-dir-recursive git-dir-file)
+      (delete-file-if-exists lockfile)
+      
+      ;; We create the lock first
+      (is (#'impl/acquire-lock lockfile))
+      (is (not (File/Exists config-file-path)))
+      
+      ;; Start a waiter thread
+      (let [waiter-result (atom nil)
+            waiter (future
+                     (try
+                       (reset! waiter-result (impl/ensure-git-dir test-url))
+                       (catch Exception e
+                         (reset! waiter-result {:error (.Message e)}))))]
+        
+        ;; Give waiter time to start waiting
+        (Thread/Sleep 2000)
+        
+        ;; Update timestamp once to keep it alive initially
+        (#'impl/write-ts lockfile)
+        (Thread/Sleep 1000)
+        
+        ;; Now STOP updating - waiter should detect expiry after 10 seconds
+        ;; Don't update anymore, just wait for the timeout
+        
+        ;; Wait for waiter to complete (should timeout and throw)
+        (deref-timely waiter 15000 "Waiter didn't timeout as expected after 15 seconds")
+        
+        ;; Clean up lock
+        (#'impl/release-lock lockfile)
+        
+        ;; Should have error about lock expired
+        (is (map? @waiter-result))
+        (is (contains? @waiter-result :error))
+        (is (str/includes? (:error @waiter-result) "lock expired"))))))
 
 ;; Scenario 2: Git dir exists and lockfile doesn't - fast path
 (deftest test-scenario-2-fast-path
@@ -220,8 +273,8 @@
                            (reset! waiter-result {:error (.Message e)}))))]
           
           ;; Wait for both to complete
-          @cloner
-          @waiter
+          (deref-timely cloner 120000 "Cloner timed out after 2 minutes")
+          (deref-timely waiter 120000 "Waiter timed out after 2 minutes")
           
           ;; Both should succeed
           (is (string? @cloner-result))

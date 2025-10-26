@@ -313,12 +313,23 @@
       ;; Otherwise, coordinate the clone
       (if (acquire-lock lockfile)
         ;; We acquired the lock - we are responsible for cloning
-        (try
-          (when-not (.Exists config-file)
-            (clone-with-timestamp-updates url git-dir-file lockfile timeout-seconds))
-          (.FullName git-dir-file)
-          (finally
-            (release-lock lockfile)))
+        (let [success? (atom false)]
+          (try
+            (when-not (.Exists config-file)
+              (clone-with-timestamp-updates url git-dir-file lockfile timeout-seconds))
+            (reset! success? true)
+            (.FullName git-dir-file)
+            (catch Exception e
+              ;; On exception, delete git dir first
+              (when (.Exists git-dir-file)
+                (try
+                  (Directory/Delete (.FullName git-dir-file) true)
+                  (catch Exception _)))
+              (throw e))
+            (finally
+              ;; Always release lock, but only if we didn't succeed should git dir be deleted
+              ;; (git dir deletion happens in catch block before we get here)
+              (release-lock lockfile))))
         ;; Another process holds the lock - wait for clone to complete
         (do
           (when (:gitlibs/debug @config/CONFIG)
@@ -398,25 +409,3 @@
     (when-not (zero? exit)
       (throw (ex-info (format "Unable to get tags %s%n%s" git-dir err) ret)))
     (remove str/blank? (str/split-lines out))))
-
-(defn -main
-  "Main entry point for command-line invocation.
-   Usage: cljr -M -m clojure.tools.gitlibs.impl <git-url>
-   Ensures the git directory for the given URL and prints the result path."
-  [& args]
-  (when (empty? args)
-    (binding [*out* *err*]
-      (println "Usage: cljr -M -m clojure.tools.gitlibs.impl <git-url>"))
-    (Environment/Exit 1))
-  (try
-    (let [url (first args)
-          result (ensure-git-dir url)]
-      (println result)
-      (flush)
-      (Environment/Exit 0))
-    (catch Exception e
-      (binding [*out* *err*]
-        (println "Error:" (.Message e))
-        (when-let [data (ex-data e)]
-          (println "Data:" data)))
-      (Environment/Exit 1))))
