@@ -286,7 +286,7 @@
               waiter-exception (atom nil)
               waiter (future
                        (try
-                         (reset! waiter-result (impl/ensure-git-dir test-config test-url))
+                         (reset! waiter-result (impl/ensure-git-dir test-url))
                          (catch Exception e
                            (reset! waiter-exception e))))]
           
