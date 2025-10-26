@@ -333,7 +333,7 @@
    every second. If the timestamp becomes >10 seconds old, it indicates a dead process
    and an exception is thrown."
   [url]
-  (let [git-dir-file (git-dir config url)
+  (let [git-dir-file (git-dir url)
         config-file (cio/file-info git-dir-file "config")
         config-file-path (.FullName config-file)
         lockfile (lockfile-for-git-dir config git-dir-file)
@@ -347,7 +347,7 @@
         (let [success? (atom false)]
             (try
               (when-not (.Exists config-file)
-                (clone-with-timestamp-updates config url git-dir-file lockfile timeout-seconds))
+                (clone-with-timestamp-updates url git-dir-file lockfile timeout-seconds))
               (reset! success? true)
               (.FullName git-dir-file)
               (catch Exception e
