@@ -284,7 +284,7 @@
         (throw e)))))
 
 (defn- wait-for-clone-completion
-  "Waits for the clone to complete by checking if the git dir config file exists.
+  "Waits for the clone to complete by checking if the git dir file exists.
    Updates the lock file timestamp every second while waiting.
    Throws if the lock file timestamp expires or if git dir doesn't exist after lock is released."
   [^String config-file-path ^String lockfile timeout-seconds]
@@ -363,7 +363,7 @@
                 (release-lock lockfile))))
         ;; Another process holds the lock - wait for clone to complete
         (do
-          (when (:gitlibs/debug config)
+          (when (:gitlibs/debug @config/CONFIG)
             (printerrln "Waiting for another process to complete clone of:" url))
           (try
             (wait-for-clone-completion config-file-path lockfile timeout-seconds)
