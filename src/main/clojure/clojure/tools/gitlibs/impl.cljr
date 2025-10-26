@@ -336,9 +336,9 @@
   (let [git-dir-file (git-dir url)
         config-file (cio/file-info git-dir-file "config")
         config-file-path (.FullName config-file)
-        lockfile (lockfile-for-git-dir config git-dir-file)
+        lockfile (lockfile-for-git-dir git-dir-file)
         timeout-seconds 10]
-    ;; Fast path: if config exists and no lock file, we're done
+    ;; Fast path: ifexists and no lock file, we're done
     (if (and (.Exists config-file) (not (System.IO.File/Exists lockfile)))
       (.FullName git-dir-file)
       ;; Otherwise, coordinate the clone
