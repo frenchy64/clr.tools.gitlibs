@@ -61,11 +61,6 @@
           exit (do (.WaitForExit proc) (.ExitCode proc))]                                                                        ;;; .waitFor  -- but .WaitForExit returns void, so we have to add the ExitCode call
       {:args command-args, :exit exit, :out @out, :err @err})))
 
-(defn- run-git
-  "Run git with the given args. Uses global CONFIG."
-  [& args]
-  (run-git-with-config @config/CONFIG args))
-
 ;; lock coordination for atomic git clone
 ;;
 ;; This section implements lock-file-based coordination to ensure that multiple
