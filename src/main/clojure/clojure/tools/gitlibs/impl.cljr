@@ -42,7 +42,7 @@
        (.Start))                                                                                           ;;; .start
      result#))
 
-(defn- run-git-with-config
+(defn run-git-with-config
   "Internal function that runs git with the given config and args."
   [config args]
   (let [{:gitlibs/keys [command debug terminal]} config
@@ -427,110 +427,4 @@
       (throw (ex-info (format "Unable to get tags %s%n%s" git-dir err) ret)))
     (remove str/blank? (str/split-lines out))))
 
-;; Git wrapper functions for testing
-;; These functions enable test control over git behavior via with-redefs
-
-(defn make-mock-git-handler
-  "Creates a mock git handler that communicates via atoms for testing.
-   
-   Returns a map with:
-   - :handler - function to use with (with-redefs [run-git-with-config ...])
-   - :event-queue - atom containing vector of events sent by git
-   - :response-fn - atom containing function that returns responses
-   
-   Usage in tests:
-   (let [{:keys [handler event-queue response-fn]} (make-mock-git-handler)]
-     (reset! response-fn (fn [event] {:op :fake-clone :target-dir \"/path\"}))
-     (with-redefs [run-git-with-config handler]
-       ... test code that calls ensure-git-dir ...)
-     ;; Check events in @event-queue)"
-  []
-  (let [event-queue (atom [])
-        response-fn (atom (fn [_] {:op :continue}))]
-    {:event-queue event-queue
-     :response-fn response-fn
-     :handler (fn [config args]
-                (let [git-cmd (str/join " " args)
-                      event {:git-cmd git-cmd :args args :config config}
-                      event-id (count @event-queue)]
-                  ;; Record the event
-                  (swap! event-queue conj event)
-                  
-                  ;; Get response from test
-                  (let [response (@response-fn event)]
-                    (case (:op response)
-                      :fake-clone
-                      (do
-                        ;; Create fake git directory
-                        (let [target-dir (or (:target-dir response)
-                                           (last args))]  ; Last arg is typically the target dir
-                          (when target-dir
-                            (when-not (Directory/Exists target-dir)
-                              (Directory/CreateDirectory target-dir))
-                            (let [config-path (Path/Join target-dir "config")]
-                              (System.IO.File/WriteAllText config-path "[core]\n\trepositoryformatversion = 0\n"))))
-                        {:args args :exit 0 :out "" :err ""})
-                      
-                      :exit
-                      {:args args :exit (:status response 1) :out "" :err (:message response "Git command failed")}
-                      
-                      :stall-seconds
-                      (do
-                        (Thread/Sleep (* 1000 (:duration response 1)))
-                        {:args args :exit 0 :out "" :err ""})
-                      
-                      :continue
-                      {:args args :exit 0 :out "" :err ""}
-                      
-                      ;; Default: success
-                      {:args args :exit 0 :out "" :err ""}))))}))
-
-(defn make-controlled-mock-git
-  "Creates a mock git handler with a promise for receiving instructions.
-   
-   Returns a map with:
-   - :handler - function to use with (with-redefs [run-git-with-config ...])
-   - :instruction-promise - deliver instructions here before git is called
-   - :events - atom with vector of all git events
-   
-   This allows synchronous control: deliver instruction, then git runs with that instruction."
-  []
-  (let [instruction-promise (promise)
-        events (atom [])]
-    {:instruction-promise instruction-promise
-     :events events
-     :handler (fn [config args]
-                (let [git-cmd (str/join " " args)
-                      event {:git-cmd git-cmd :args args}]
-                  (swap! events conj event)
-                  
-                  ;; Wait for instruction (blocks until delivered)
-                  (let [instruction @instruction-promise]
-                    (case (:op instruction)
-                      :fake-clone
-                      (do
-                        (let [target-dir (or (:target-dir instruction) (last args))]
-                          (when target-dir
-                            (when-not (Directory/Exists target-dir)
-                              (Directory/CreateDirectory target-dir))
-                            (let [config-path (Path/Join target-dir "config")]
-                              (System.IO.File/WriteAllText config-path "[core]\n\trepositoryformatversion = 0\n"))))
-                        {:args args :exit 0 :out "" :err ""})
-                      
-                      :exit
-                      {:args args :exit (:status instruction 1) :out "" :err (:message instruction "Failed")}
-                      
-                      :stall-then-succeed
-                      (do
-                        (Thread/Sleep (* 1000 (:duration instruction 1)))
-                        (let [target-dir (or (:target-dir instruction) (last args))]
-                          (when target-dir
-                            (when-not (Directory/Exists target-dir)
-                              (Directory/CreateDirectory target-dir))
-                            (let [config-path (Path/Join target-dir "config")]
-                              (System.IO.File/WriteAllText config-path "[core]\n\trepositoryformatversion = 0\n"))))
-                        {:args args :exit 0 :out "" :err ""})
-                      
-                      ;; Default: success
-                      {:args args :exit 0 :out "" :err ""}))))}))
 

@@ -91,6 +91,110 @@
 ;; Mock git helpers using with-redefs
 ;; No external processes needed - use atoms and promises for coordination
 
+(defn make-mock-git-handler
+  "Creates a mock git handler that communicates via atoms for testing.
+   
+   Returns a map with:
+   - :handler - function to use with (with-redefs [run-git-with-config ...])
+   - :event-queue - atom containing vector of events sent by git
+   - :response-fn - atom containing function that returns responses
+   
+   Usage in tests:
+   (let [{:keys [handler event-queue response-fn]} (make-mock-git-handler)]
+     (reset! response-fn (fn [event] {:op :fake-clone :target-dir \"/path\"}))
+     (with-redefs [impl/run-git-with-config handler]
+       ... test code that calls ensure-git-dir ...)
+     ;; Check events in @event-queue)"
+  []
+  (let [event-queue (atom [])
+        response-fn (atom (fn [_] {:op :continue}))]
+    {:event-queue event-queue
+     :response-fn response-fn
+     :handler (fn [config args]
+                (let [git-cmd (str/join " " args)
+                      event {:git-cmd git-cmd :args args :config config}
+                      event-id (count @event-queue)]
+                  ;; Record the event
+                  (swap! event-queue conj event)
+                  
+                  ;; Get response from test
+                  (let [response (@response-fn event)]
+                    (case (:op response)
+                      :fake-clone
+                      (do
+                        ;; Create fake git directory
+                        (let [target-dir (or (:target-dir response)
+                                           (last args))]  ; Last arg is typically the target dir
+                          (when target-dir
+                            (when-not (Directory/Exists target-dir)
+                              (Directory/CreateDirectory target-dir))
+                            (let [config-path (Path/Join target-dir "config")]
+                              (File/WriteAllText config-path "[core]\n\trepositoryformatversion = 0\n"))))
+                        {:args args :exit 0 :out "" :err ""})
+                      
+                      :exit
+                      {:args args :exit (:status response 1) :out "" :err (:message response "Git command failed")}
+                      
+                      :stall-seconds
+                      (do
+                        (Thread/Sleep (* 1000 (:duration response 1)))
+                        {:args args :exit 0 :out "" :err ""})
+                      
+                      :continue
+                      {:args args :exit 0 :out "" :err ""}
+                      
+                      ;; Default: success
+                      {:args args :exit 0 :out "" :err ""}))))}))
+
+(defn make-controlled-mock-git
+  "Creates a mock git handler with a promise for receiving instructions.
+   
+   Returns a map with:
+   - :handler - function to use with (with-redefs [run-git-with-config ...])
+   - :instruction-promise - deliver instructions here before git is called
+   - :events - atom with vector of all git events
+   
+   This allows synchronous control: deliver instruction, then git runs with that instruction."
+  []
+  (let [instruction-promise (promise)
+        events (atom [])]
+    {:instruction-promise instruction-promise
+     :events events
+     :handler (fn [config args]
+                (let [git-cmd (str/join " " args)
+                      event {:git-cmd git-cmd :args args}]
+                  (swap! events conj event)
+                  
+                  ;; Wait for instruction (blocks until delivered)
+                  (let [instruction @instruction-promise]
+                    (case (:op instruction)
+                      :fake-clone
+                      (do
+                        (let [target-dir (or (:target-dir instruction) (last args))]
+                          (when target-dir
+                            (when-not (Directory/Exists target-dir)
+                              (Directory/CreateDirectory target-dir))
+                            (let [config-path (Path/Join target-dir "config")]
+                              (File/WriteAllText config-path "[core]\n\trepositoryformatversion = 0\n"))))
+                        {:args args :exit 0 :out "" :err ""})
+                      
+                      :exit
+                      {:args args :exit (:status instruction 1) :out "" :err (:message instruction "Failed")}
+                      
+                      :stall-then-succeed
+                      (do
+                        (Thread/Sleep (* 1000 (:duration instruction 1)))
+                        (let [target-dir (or (:target-dir instruction) (last args))]
+                          (when target-dir
+                            (when-not (Directory/Exists target-dir)
+                              (Directory/CreateDirectory target-dir))
+                            (let [config-path (Path/Join target-dir "config")]
+                              (File/WriteAllText config-path "[core]\n\trepositoryformatversion = 0\n"))))
+                        {:args args :exit 0 :out "" :err ""})
+                      
+                      ;; Default: success
+                      {:args args :exit 0 :out "" :err ""}))))}))
+
 ;; Scenario 1a: We won the race, delete lockfile when git dir deleted
 (deftest test-scenario-1a-won-race-deleted-gitdir
   (testing "Won race: delete lockfile when git dir deleted causes waiter to throw"
@@ -111,12 +215,12 @@
         (is (not (File/Exists config-file-path)))
         
         ;; Start a waiter thread
-        (let [waiter-result (atom nil)
+        (let [waiter-exception (atom nil)
               waiter (future
                        (try
-                         (reset! waiter-result (impl/ensure-git-dir test-config test-url))
+                         (impl/ensure-git-dir test-config test-url)
                          (catch Exception e
-                           (reset! waiter-result {:error (.Message e)}))))]
+                           (reset! waiter-exception e))))]
           
           ;; Give waiter time to start waiting
           (Thread/Sleep 2000)
@@ -133,10 +237,9 @@
           ;; Wait for waiter to complete
           (deref-timely waiter 30000 "Waiter timed out after 30 seconds")
           
-          ;; Should have error about clone failed
-          (is (map? @waiter-result))
-          (is (contains? @waiter-result :error))
-          (is (str/includes? (:error @waiter-result) "Clone failed")))
+          ;; Should have thrown exception about clone failed
+          (is (some? @waiter-exception))
+          (is (str/includes? (.Message @waiter-exception) "Clone failed")))
         
         (finally
           ;; Cleanup temp directory
@@ -166,11 +269,12 @@
         
         ;; Start a waiter thread
         (let [waiter-result (atom nil)
+              waiter-exception (atom nil)
               waiter (future
                        (try
                          (reset! waiter-result (impl/ensure-git-dir test-config test-url))
                          (catch Exception e
-                           (reset! waiter-result {:error (.Message e)}))))]
+                           (reset! waiter-exception e))))]
           
           ;; Give waiter time to start waiting
           (Thread/Sleep 2000)
@@ -187,6 +291,7 @@
           (deref-timely waiter 30000 "Waiter timed out after 30 seconds")
           
           ;; Should return successfully
+          (is (nil? @waiter-exception))
           (is (string? @waiter-result))
           (is (= git-dir-path @waiter-result)))
         
@@ -216,12 +321,12 @@
         (is (not (File/Exists config-file-path)))
         
         ;; Start a waiter thread
-        (let [waiter-result (atom nil)
+        (let [waiter-exception (atom nil)
               waiter (future
                        (try
-                         (reset! waiter-result (impl/ensure-git-dir test-config test-url))
+                         (impl/ensure-git-dir test-config test-url)
                          (catch Exception e
-                           (reset! waiter-result {:error (.Message e)}))))]
+                           (reset! waiter-exception e))))]
           
           ;; Give waiter time to start waiting
           (Thread/Sleep 2000)
@@ -237,10 +342,9 @@
           ;; Clean up lock
           (#'impl/release-lock lockfile)
           
-          ;; Should have error about lock expired
-          (is (map? @waiter-result))
-          (is (contains? @waiter-result :error))
-          (is (str/includes? (:error @waiter-result) "lock expired")))
+          ;; Should have thrown exception about lock expired
+          (is (some? @waiter-exception))
+          (is (str/includes? (.Message @waiter-exception) "lock expired")))
         
         (finally
           ;; Cleanup temp directory
@@ -298,7 +402,7 @@
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)
-          mock-git (impl/make-mock-git-handler)]
+          mock-git (make-mock-git-handler)]
       
       (try
         ;; Clean up
@@ -343,7 +447,7 @@
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)
-          mock-git (impl/make-mock-git-handler)]
+          mock-git (make-mock-git-handler)]
       
       (try
         ;; Clean up
@@ -399,7 +503,7 @@
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)
-          mock-git (impl/make-mock-git-handler)]
+          mock-git (make-mock-git-handler)]
       
       (try
         ;; Clean up
@@ -416,6 +520,9 @@
         (is (thrown? Exception
               (with-redefs [impl/run-git-with-config (:handler mock-git)]
                 (impl/ensure-git-dir test-config test-url))))
+        
+        ;; Wait a bit for cleanup to complete
+        (Thread/Sleep 500)
         
         ;; Git directory should NOT exist (cleaned up on failure)
         (is (not (Directory/Exists git-dir-path)))
