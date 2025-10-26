@@ -224,67 +224,65 @@
 (defn- clone-with-timestamp-updates
   "Clones the repo to the target directory while updating the lock file timestamp every second.
    Throws if the timestamp expires or clone fails. On failure, deletes the git dir."
-  ([url ^DirectoryInfo git-dir ^String lockfile timeout-seconds]
-   (clone-with-timestamp-updates @config/CONFIG url git-dir lockfile timeout-seconds))
-  ([config url ^DirectoryInfo git-dir ^String lockfile timeout-seconds]
-   (printerrln "Cloning:" url)
-   (let [git-path (.FullName git-dir)
-         ;; Start the git clone in a future so we can update timestamps
-         clone-future (future
-                        (try
-                          (run-git-with-config config ["clone" "--quiet" "--mirror" url git-path])
-                          (catch Exception e
-                            {:exception e})))
-         clone-result (atom nil)]
-     (try
-       (loop []
-         (let [result (deref clone-future 1000 ::running)]
-           (if (= result ::running)
-             ;; Still running - update timestamp and check expiry
-             (do
-               (write-ts lockfile)
-               (if (timestamp-expired? lockfile timeout-seconds)
-                 (do
-                   ;; Timeout - try to cancel future (best effort)
-                   (future-cancel clone-future)
-                   ;; Clean up partial clone before throwing
-                   (when (.Exists git-dir)
-                     (try
-                       (Directory/Delete git-path true)
-                       (catch Exception _)))
-                   (throw (ex-info "Clone timed out (lock expired)" {:url url :git-path git-path})))
-                 (recur)))
-             ;; Clone finished
-             (do
-               (reset! clone-result result)
-               ;; Check if it was an exception
-               (when (map? result)
-                 (when-let [e (:exception result)]
-                   ;; Clean up partial clone before throwing
-                   (when (.Exists git-dir)
-                     (try
-                       (Directory/Delete git-path true)
-                       (catch Exception _)))
-                   (throw e)))
-               ;; Check exit code
-               (let [exit (:exit result)]
-                 (when-not (zero? exit)
-                   (let [err (:err result)]
-                     ;; Clean up partial clone before throwing
-                     (when (.Exists git-dir)
+  [url ^DirectoryInfo git-dir ^String lockfile timeout-seconds]
+  (printerrln "Cloning:" url)
+  (let [git-path (.FullName git-dir)
+        ;; Start the git clone in a future so we can update timestamps
+        clone-future (future
                        (try
-                         (Directory/Delete git-path true)
-                         (catch Exception _)))
-                     (throw (ex-info (format "Unable to clone %s%n%s" git-path err) {:exit exit :err err})))))))))
-       (catch Exception e
-         ;; Cancel future on exception (best effort)
-         (future-cancel clone-future)
-         ;; Clean up partial clone before re-throwing
-         (when (.Exists git-dir)
-           (try
-             (Directory/Delete git-path true)
-             (catch Exception _)))
-         (throw e))))))
+                         (run-git "clone" "--quiet" "--mirror" url git-path)
+                         (catch Exception e
+                           {:exception e})))
+        clone-result (atom nil)]
+    (try
+      (loop []
+        (let [result (deref clone-future 1000 ::running)]
+          (if (= result ::running)
+            ;; Still running - update timestamp and check expiry
+            (do
+              (write-ts lockfile)
+              (if (timestamp-expired? lockfile timeout-seconds)
+                (do
+                  ;; Timeout - try to cancel future (best effort)
+                  (future-cancel clone-future)
+                  ;; Clean up partial clone before throwing
+                  (when (.Exists git-dir)
+                    (try
+                      (Directory/Delete git-path true)
+                      (catch Exception _)))
+                  (throw (ex-info "Clone timed out (lock expired)" {:url url :git-path git-path})))
+                (recur)))
+            ;; Clone finished
+            (do
+              (reset! clone-result result)
+              ;; Check if it was an exception
+              (when (map? result)
+                (when-let [e (:exception result)]
+                  ;; Clean up partial clone before throwing
+                  (when (.Exists git-dir)
+                    (try
+                      (Directory/Delete git-path true)
+                      (catch Exception _)))
+                  (throw e)))
+              ;; Check exit code
+              (let [exit (:exit result)]
+                (when-not (zero? exit)
+                  (let [err (:err result)]
+                    ;; Clean up partial clone before throwing
+                    (when (.Exists git-dir)
+                      (try
+                        (Directory/Delete git-path true)
+                        (catch Exception _)))
+                    (throw (ex-info (format "Unable to clone %s%n%s" git-path err) {:exit exit :err err})))))))))
+      (catch Exception e
+        ;; Cancel future on exception (best effort)
+        (future-cancel clone-future)
+        ;; Clean up partial clone before re-throwing
+        (when (.Exists git-dir)
+          (try
+            (Directory/Delete git-path true)
+            (catch Exception _)))
+        (throw e)))))
 
 (defn- wait-for-clone-completion
   "Waits for the clone to complete by checking if the git dir config file exists.
