@@ -178,10 +178,8 @@
 
 (defn- lock-dir
   "Returns the directory where lock files are stored."
-  (^DirectoryInfo []
-   (lock-dir @config/CONFIG))
-  (^DirectoryInfo [config]
-   (cio/dir-info (:gitlibs/dir config) "_locks")))
+  ^DirectoryInfo []
+  (cio/dir-info (:gitlibs/dir @config/CONFIG) "_locks"))
 
 (defn- lockfile-for-git-dir
   "Returns the lockfile path for a given git directory."
