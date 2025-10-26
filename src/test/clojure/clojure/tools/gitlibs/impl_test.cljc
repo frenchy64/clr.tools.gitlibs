@@ -487,7 +487,7 @@
         
         ;; Try to clone - should fail
         (is (thrown? Exception
-              (with-redefs [impl/run-git-with-config (:handler mock-git)]
+              (with-redefs [impl/run-git (:handler mock-git)]
                 (impl/ensure-git-dir test-config test-url))))
         
         ;; Wait a bit for cleanup to complete
