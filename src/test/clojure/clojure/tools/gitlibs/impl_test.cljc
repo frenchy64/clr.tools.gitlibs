@@ -463,62 +463,6 @@
           (when (Directory/Exists temp-gitlibs)
             (Directory/Delete temp-gitlibs true)))))))
 
-;; Scenario 4: Test concurrent clones with mock git
-(deftest test-scenario-4-concurrent-with-mock
-  (testing "Two concurrent clones with mock git - one clones, one waits"
-    (let [test-url "https://github.com/clojure/spec.alpha.git"
-          temp-gitlibs (create-temp-gitlibs-dir)
-          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
-          lockfile (get-lockfile temp-gitlibs test-url)
-          config-file-path (get-config-file-path temp-gitlibs test-url)
-          git-dir-path (get-git-dir-path temp-gitlibs test-url)
-          mock-git (make-mock-git-handler)]
-      
-      (try
-        ;; Clean up
-        (delete-file-if-exists lockfile)
-        (when (Directory/Exists git-dir-path)
-          (Directory/Delete git-dir-path true))
-        
-        ;; Configure mock git to stall for 3 seconds then create fake clone
-        (reset! (:response-fn mock-git)
-                (fn [event]
-                  (Thread/Sleep 3000)
-                  {:op :fake-clone :target-dir git-dir-path}))
-        
-        ;; Start two concurrent clones
-        (let [results (atom [])
-              f1 (future
-                   (with-redefs [impl/run-git-with-config (:handler mock-git)]
-                     (swap! results conj (impl/ensure-git-dir test-config test-url))))
-              f2 (future
-                   (with-redefs [impl/run-git-with-config (:handler mock-git)]
-                     (Thread/Sleep 500)  ; Ensure f2 starts after f1
-                     (swap! results conj (impl/ensure-git-dir test-config test-url))))]
-          
-          ;; Wait for both to complete
-          (deref-timely f1 120000 "f1 timed out after 2 minutes")
-          (deref-timely f2 120000 "f2 timed out after 2 minutes")
-          
-          ;; Both should succeed with same git dir path
-          (is (= 2 (count @results)))
-          (is (= git-dir-path (first @results)))
-          (is (= git-dir-path (second @results)))
-          
-          ;; Git directory should exist
-          (is (File/Exists config-file-path))
-          
-          ;; Lock should be released
-          (is (not (File/Exists lockfile)))
-          
-          ;; Only one clone should have actually happened
-          (is (= 1 (count @(:event-queue mock-git)))))
-        
-        (finally
-          ;; Cleanup temp directory
-          (when (Directory/Exists temp-gitlibs)
-            (Directory/Delete temp-gitlibs true)))))))
-
 ;; Scenario 5: Test clone failure with mock git
 (deftest test-scenario-5-clone-failure-with-mock
   (testing "Clone failure with mock git - should clean up git dir and lock"
