@@ -12,25 +12,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Leiningen
-        run: |
-          curl -O https://raw.githubusercontent.com/technomancy/leiningen/stable/bin/lein
-          chmod +x lein
-          sudo mv lein /usr/local/bin/lein
-          lein --version
-
-      - name: Install .NET SDK (for ClojureCLR)
+      - name: Install .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
 
-      - name: Install ClojureCLR
+      - name: Install cljr
         run: |
-          dotnet tool install --global Clojure.Main --version 1.12.3-alpha3
-          export CLJCLR_ROOT="$HOME/.dotnet/tools/.store/clojure.main/1.12.3-alpha3"
-          export CLJCLR_DLL="$HOME/.dotnet/tools/clojure.main.dll"
-          # The next line sets the expected environment variable for lein-clr, adjust the path as needed!
-          echo "CLJCLR15_40=$CLJCLR_DLL" >> $GITHUB_ENV
+          dotnet tool install --global Clojure.Cljr --version 0.1.0-alpha8
+          echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+          cljr --version
 
       - name: Run ClojureCLR tests
-        run: lein clr test
+        run: cljr -X:test
