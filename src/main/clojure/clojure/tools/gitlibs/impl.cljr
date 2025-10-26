@@ -333,46 +333,44 @@
    The lock file contains a timestamp that both the cloner and waiting processes update
    every second. If the timestamp becomes >10 seconds old, it indicates a dead process
    and an exception is thrown."
-  ([url]
-   (ensure-git-dir @config/CONFIG url))
-  ([config url]
-   (let [git-dir-file (git-dir config url)
-         config-file (cio/file-info git-dir-file "config")
-         config-file-path (.FullName config-file)
-         lockfile (lockfile-for-git-dir config git-dir-file)
-         timeout-seconds 10]
-     ;; Fast path: if config exists and no lock file, we're done
-     (if (and (.Exists config-file) (not (System.IO.File/Exists lockfile)))
-       (.FullName git-dir-file)
-       ;; Otherwise, coordinate the clone
-       (if (acquire-lock lockfile)
-         ;; We acquired the lock - we are responsible for cloning
-         (let [success? (atom false)]
-             (try
-               (when-not (.Exists config-file)
-                 (clone-with-timestamp-updates config url git-dir-file lockfile timeout-seconds))
-               (reset! success? true)
-               (.FullName git-dir-file)
-               (catch Exception e
-                 ;; On exception, delete git dir first
-                 (when (.Exists git-dir-file)
-                   (try
-                     (Directory/Delete (.FullName git-dir-file) true)
-                     (catch Exception _)))
-                 (throw e))
-               (finally
-                 ;; Always release lock, but only if we didn't succeed should git dir be deleted
-                 ;; (git dir deletion happens in catch block before we get here)
-                 (release-lock lockfile))))
-         ;; Another process holds the lock - wait for clone to complete
-         (do
-           (when (:gitlibs/debug config)
-             (printerrln "Waiting for another process to complete clone of:" url))
-           (try
-             (wait-for-clone-completion config-file-path lockfile timeout-seconds)
-             (.FullName git-dir-file)
-             (catch Exception e
-               (throw e)))))))))
+  [url]
+  (let [git-dir-file (git-dir config url)
+        config-file (cio/file-info git-dir-file "config")
+        config-file-path (.FullName config-file)
+        lockfile (lockfile-for-git-dir config git-dir-file)
+        timeout-seconds 10]
+    ;; Fast path: if config exists and no lock file, we're done
+    (if (and (.Exists config-file) (not (System.IO.File/Exists lockfile)))
+      (.FullName git-dir-file)
+      ;; Otherwise, coordinate the clone
+      (if (acquire-lock lockfile)
+        ;; We acquired the lock - we are responsible for cloning
+        (let [success? (atom false)]
+            (try
+              (when-not (.Exists config-file)
+                (clone-with-timestamp-updates config url git-dir-file lockfile timeout-seconds))
+              (reset! success? true)
+              (.FullName git-dir-file)
+              (catch Exception e
+                ;; On exception, delete git dir first
+                (when (.Exists git-dir-file)
+                  (try
+                    (Directory/Delete (.FullName git-dir-file) true)
+                    (catch Exception _)))
+                (throw e))
+              (finally
+                ;; Always release lock, but only if we didn't succeed should git dir be deleted
+                ;; (git dir deletion happens in catch block before we get here)
+                (release-lock lockfile))))
+        ;; Another process holds the lock - wait for clone to complete
+        (do
+          (when (:gitlibs/debug config)
+            (printerrln "Waiting for another process to complete clone of:" url))
+          (try
+            (wait-for-clone-completion config-file-path lockfile timeout-seconds)
+            (.FullName git-dir-file)
+            (catch Exception e
+              (throw e))))))))
 
 (defn git-checkout
   [git-dir-path ^DirectoryInfo lib-dir ^String rev]                                               ;;; ^File
