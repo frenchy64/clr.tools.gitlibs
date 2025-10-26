@@ -71,24 +71,6 @@
     (Directory/CreateDirectory temp-dir)
     temp-dir))
 
-(defn- get-lockfile
-  "Returns the lockfile path for a given URL in the specified gitlibs dir."
-  [gitlibs-dir url]
-  (let [git-dir-file (cio/dir-info gitlibs-dir "_repos" (#'impl/clean-url url))]
-    (#'impl/lockfile-for-git-dir git-dir-file)))
-
-(defn- get-config-file-path
-  "Returns the config file path for a given URL in the specified gitlibs dir."
-  [gitlibs-dir url]
-  (let [git-dir-file (cio/dir-info gitlibs-dir "_repos" (#'impl/clean-url url))
-        config-file (cio/file-info git-dir-file "config")]
-    (.FullName config-file)))
-
-(defn- get-git-dir-path
-  "Returns the git directory path for a given URL in the specified gitlibs dir."
-  [gitlibs-dir url]
-  (.FullName (cio/dir-info gitlibs-dir "_repos" (#'impl/clean-url url))))
-
 ;; Mock git helpers using with-redefs
 ;; No external processes needed - use atoms and promises for coordination
 
@@ -202,21 +184,22 @@
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
           test-config (assoc @config/CONFIG :gitlibs/dir temp-gitlibs)
-          lockfile (get-lockfile temp-gitlibs test-url)
-          config-file-path (get-config-file-path temp-gitlibs test-url)
-          git-dir-path (get-git-dir-path temp-gitlibs test-url)
           {:keys [handler event-queue response-fn]} (make-mock-git-handler)]
-      (try
-        ;; Set up mock git to prevent any real git operations
-        (reset! response-fn (fn [_] {:op :fake-clone}))
-        
-        ;; Clean up
-        (delete-file-if-exists lockfile)
-        (when (Directory/Exists git-dir-path)
-          (Directory/Delete git-dir-path true))
-        
-        (with-redefs [config/CONFIG (delay test-config)
-                      impl/run-git handler]
+      (with-redefs [config/CONFIG (delay test-config)]
+        (let [git-dir (impl/git-dir test-url)
+              git-dir-path (.FullName git-dir)
+              lockfile (#'impl/lockfile-for-git-dir git-dir)
+              config-file-path (.FullName (cio/file-info git-dir "config"))]
+          (try
+            ;; Set up mock git to prevent any real git operations
+            (reset! response-fn (fn [_] {:op :fake-clone}))
+            
+            ;; Clean up
+            (delete-file-if-exists lockfile)
+            (when (Directory/Exists git-dir-path)
+              (Directory/Delete git-dir-path true))
+            
+            (with-redefs [impl/run-git handler]
           ;; We create the lock first (simulating that we "won the race")
           (is (#'impl/acquire-lock lockfile))
           (is (not (File/Exists config-file-path)))
