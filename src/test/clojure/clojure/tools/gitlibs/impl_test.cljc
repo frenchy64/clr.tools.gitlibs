@@ -201,30 +201,26 @@
   (testing "Won race: delete lockfile when git dir deleted causes waiter to throw"
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
-          ;; TODO use with-redefs to establish in each test
           test-config (assoc @config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
-          git-dir-path (get-git-dir-path temp-gitlibs test-url)
-          {:keys [handler event-queue response-fn]} (make-mock-git-handler)]
+          git-dir-path (get-git-dir-path temp-gitlibs test-url)]
       (try
-        ;; Set up mock git to fake clone
-        (reset! response-fn (fn [_] {:op :fake-clone}))
-        
         ;; Clean up
         (delete-file-if-exists lockfile)
         (when (Directory/Exists git-dir-path)
           (Directory/Delete git-dir-path true))
         
-        ;; We create the lock first
+        ;; We create the lock first (simulating that we "won the race")
         (is (#'impl/acquire-lock lockfile))
         (is (not (File/Exists config-file-path)))
         
-        ;; Start a waiter thread with mock git
+        ;; Start a waiter thread that will wait for the lock
+        ;; When it gets the lock and tries to verify clone completion,
+        ;; it will find no git dir and throw
         (let [waiter-exception (atom nil)
               waiter (future
-                       (with-redefs [config/CONFIG (delay test-config)
-                                     impl/run-git handler]
+                       (with-redefs [config/CONFIG (delay test-config)]
                          (try
                            (impl/ensure-git-dir test-url)
                            (catch Exception e
@@ -247,7 +243,8 @@
           ;; Verify git dir still doesn't exist - check BEFORE releasing lock
           (is (not (File/Exists config-file-path)) "Config file should not exist before we release lock")
           
-          ;; Now release the lock
+          ;; Now release the lock WITHOUT creating the git directory
+          ;; This simulates a failed clone scenario
           (#'impl/release-lock lockfile)
           
           ;; Wait for waiter to complete
