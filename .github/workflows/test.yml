@@ -19,5 +19,18 @@ jobs:
           sudo mv lein /usr/local/bin/lein
           lein --version
 
+      - name: Install .NET SDK (for ClojureCLR)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install ClojureCLR
+        run: |
+          dotnet tool install --global Clojure.Main --version 1.12.3-alpha3
+          export CLJCLR_ROOT="$HOME/.dotnet/tools/.store/clojure.main/1.12.3-alpha3"
+          export CLJCLR_DLL="$HOME/.dotnet/tools/clojure.main.dll"
+          # The next line sets the expected environment variable for lein-clr, adjust the path as needed!
+          echo "CLJCLR15_40=$CLJCLR_DLL" >> $GITHUB_ENV
+
       - name: Run ClojureCLR tests
         run: lein clr test
