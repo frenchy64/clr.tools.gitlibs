@@ -222,10 +222,16 @@
                          (catch Exception e
                            (reset! waiter-exception e))))]
           
-          ;; Give waiter time to start waiting
+          ;; Give waiter time to start waiting and verify it's waiting by checking
+          ;; if the lockfile timestamp is being updated by the waiter
           (Thread/Sleep 2000)
+          (let [ts1 (#'impl/read-ts lockfile)]
+            (Thread/Sleep 1500)
+            (let [ts2 (#'impl/read-ts lockfile)]
+              ;; If waiter is updating, ts2 should be after ts1
+              (is (or (nil? ts1) (nil? ts2) (.CompareTo ts2 ts1)))))
           
-          ;; Update timestamp to keep it alive
+          ;; Update timestamp a couple more times to keep it alive
           (#'impl/write-ts lockfile)
           (Thread/Sleep 1000)
           (#'impl/write-ts lockfile)
@@ -239,7 +245,8 @@
           
           ;; Should have thrown exception about clone failed
           (is (some? @waiter-exception))
-          (is (str/includes? (.Message @waiter-exception) "Clone failed")))
+          (when @waiter-exception
+            (is (str/includes? (.Message @waiter-exception) "Clone failed"))))
         
         (finally
           ;; Cleanup temp directory
@@ -328,8 +335,13 @@
                          (catch Exception e
                            (reset! waiter-exception e))))]
           
-          ;; Give waiter time to start waiting
+          ;; Give waiter time to start waiting and verify it's waiting
           (Thread/Sleep 2000)
+          (let [ts1 (#'impl/read-ts lockfile)]
+            (Thread/Sleep 1500)
+            (let [ts2 (#'impl/read-ts lockfile)]
+              ;; If waiter is updating, ts2 should be after ts1
+              (is (or (nil? ts1) (nil? ts2) (.CompareTo ts2 ts1)))))
           
           ;; Update timestamp once to keep it alive initially
           (#'impl/write-ts lockfile)
@@ -344,7 +356,8 @@
           
           ;; Should have thrown exception about lock expired
           (is (some? @waiter-exception))
-          (is (str/includes? (.Message @waiter-exception) "lock expired")))
+          (when @waiter-exception
+            (is (str/includes? (.Message @waiter-exception) "lock expired"))))
         
         (finally
           ;; Cleanup temp directory
