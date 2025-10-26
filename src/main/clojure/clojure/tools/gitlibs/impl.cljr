@@ -183,17 +183,15 @@
 
 (defn- lockfile-for-git-dir
   "Returns the lockfile path for a given git directory."
-  ([^DirectoryInfo git-dir-file]
-   (lockfile-for-git-dir @config/CONFIG git-dir-file))
-  ([config ^DirectoryInfo git-dir-file]
-   (let [lock-dir-path (lock-dir config)
-         ;; Ensure lock directory exists
-         _ (when-not (.Exists lock-dir-path)
-             (Directory/CreateDirectory (.FullName lock-dir-path)))
-         ;; Create a safe filename from the git dir path
-         git-dir-name (.Replace (.FullName git-dir-file) (System.IO.Path/DirectorySeparatorChar) (char \_))
-         git-dir-name (.Replace git-dir-name (System.IO.Path/AltDirectorySeparatorChar) (char \_))]
-     (System.IO.Path/Join (.FullName lock-dir-path) (str git-dir-name ".lock")))))
+  [^DirectoryInfo git-dir-file]
+  (let [lock-dir-path (lock-dir)
+        ;; Ensure lock directory exists
+        _ (when-not (.Exists lock-dir-path)
+            (Directory/CreateDirectory (.FullName lock-dir-path)))
+        ;; Create a safe filename from the git dir path
+        git-dir-name (.Replace (.FullName git-dir-file) (System.IO.Path/DirectorySeparatorChar) (char \_))
+        git-dir-name (.Replace git-dir-name (System.IO.Path/AltDirectorySeparatorChar) (char \_))]
+    (System.IO.Path/Join (.FullName lock-dir-path) (str git-dir-name ".lock"))))
 
 (defn git-try-fetch
   "Try to fetch and return the error code (0=success)"
