@@ -13,6 +13,7 @@
     [clojure.string :as str]
     [clojure.tools.gitlibs.config :as config])
   (:import
+    [System DateTime]
     [System.Diagnostics ProcessStartInfo Process]                               ;;; [java.lang ProcessBuilder$Redirect]
     [System.IO Stream StringWriter FileInfo DirectoryInfo Path IOException]     ;;; [java.io File FilenameFilter InputStream IOException StringWriter]
     [System.Threading Thread ThreadStart]))
@@ -58,6 +59,76 @@
           err (background (capture (.StandardError proc)))                                                 ;; if debug is true, stderr will be redirected instead  .getErrorStream
           exit (do (.WaitForExit proc) (.ExitCode proc))]                                                                        ;;; .waitFor  -- but .WaitForExit returns void, so we have to add the ExitCode call
       {:args command-args, :exit exit, :out @out, :err @err})))
+
+;; lock coordination for atomic git clone
+;;
+;; This section implements lock-file-based coordination to ensure that multiple
+;; processes attempting to clone the same git repository to the same directory
+;; do not race or interfere with each other.
+;;
+;; Algorithm:
+;; 1. Fast path: If git dir exists and no lock file, return immediately (already cloned)
+;; 2. Try to acquire lock by atomically creating a lock file
+;; 3. If lock acquired:
+;;    - Clone the repo directly into the target directory
+;;    - Update timestamp in lock file every second during clone
+;;    - Remove lock file on completion (success or failure)
+;; 4. If lock not acquired (another process is cloning):
+;;    - Wait for the clone to complete
+;;    - Update timestamp in lock file every second while waiting
+;;    - Check if timestamp expires (>10 seconds old) - if so, throw exception
+;; 5. The timestamp mechanism ensures both cloner and waiter keep the lock "alive"
+;;    and allows detection of dead/crashed processes
+;;
+;; This approach avoids PID reliance and uses only filesystem primitives and wall-clock time.
+
+(defn- current-ts
+  "Returns the current UTC timestamp as a string."
+  []
+  (.ToString (.ToUniversalTime (DateTime/Now))))
+
+(defn- write-ts
+  "Writes the current timestamp to the lock file."
+  [^String lockfile]
+  (System.IO.File/WriteAllText lockfile ^String (current-ts)))
+
+(defn- read-ts
+  "Reads the timestamp from the lock file and parses it as a DateTime.
+   Returns nil if parsing fails or file doesn't exist."
+  [^String lockfile]
+  (try
+    (when (System.IO.File/Exists lockfile)
+      (DateTime/Parse (System.IO.File/ReadAllText lockfile)))
+    (catch Exception _ nil)))
+
+(defn- acquire-lock
+  "Attempts to atomically create the lock file and writes the initial timestamp.
+   Returns true if the lock was acquired, false otherwise."
+  [^String lockfile]
+  (try
+    (let [fs (System.IO.File/Open lockfile System.IO.FileMode/CreateNew 
+                                   System.IO.FileAccess/Write System.IO.FileShare/None)]
+      (.Close fs)
+      (write-ts lockfile)
+      true)
+    (catch System.IO.IOException _
+      false)))
+
+(defn- release-lock
+  "Deletes the lock file, releasing the lock."
+  [^String lockfile]
+  (try
+    (System.IO.File/Delete lockfile)
+    (catch Exception _)))
+
+(defn- timestamp-expired?
+  "Returns true if the timestamp in the lock file is older than timeout-seconds.
+   Returns true if the timestamp cannot be read."
+  [^String lockfile timeout-seconds]
+  (let [ts (read-ts lockfile)
+        now (.ToUniversalTime (DateTime/Now))]
+    (or (nil? ts)
+        (> (.TotalSeconds (.Subtract ^DateTime now ^DateTime ts)) timeout-seconds))))
 
 ;; dirs
 
@@ -132,14 +203,94 @@
       (throw (ex-info (format "Unable to clone %s%n%s" git-path err) ret)))
     git-dir))
 
+(defn- clone-with-timestamp-updates
+  "Clones the repo to the target directory while updating the lock file timestamp every second.
+   Throws if the timestamp expires or clone fails."
+  [url ^DirectoryInfo git-dir ^String lockfile timeout-seconds]
+  (let [git-path (.FullName git-dir)
+        proc-builder (doto (ProcessStartInfo. ^String (:gitlibs/command @config/CONFIG) 
+                                              ^String (str "clone --quiet --mirror " url " " git-path))
+                       (.set_RedirectStandardError true)
+                       (.set_RedirectStandardOutput true))
+        ^Process proc (Process/Start proc-builder)
+        clone-result (atom nil)]
+    (try
+      (loop []
+        (if (.HasExited proc)
+          (let [exit (.ExitCode proc)]
+            (reset! clone-result exit)
+            (when-not (zero? exit)
+              (let [err (capture (.StandardError proc))]
+                (throw (ex-info (format "Unable to clone %s%n%s" git-path err) {:exit exit :err err})))))
+          (do
+            (write-ts lockfile)
+            (if (timestamp-expired? lockfile timeout-seconds)
+              (do
+                (.Kill proc)
+                (throw (ex-info "Clone timed out (lock expired)" {:url url :git-path git-path})))
+              (do
+                (Thread/Sleep 1000)
+                (recur))))))
+      (catch Exception e
+        (try
+          (.Kill proc)
+          (catch Exception _))
+        (throw e)))))
+
+(defn- wait-for-clone-completion
+  "Waits for the clone to complete by checking if the git dir config file exists.
+   Updates the lock file timestamp every second while waiting.
+   Throws if the lock file timestamp expires."
+  [^FileInfo config-file ^String lockfile timeout-seconds]
+  (loop []
+    (when-not (.Exists config-file)
+      (write-ts lockfile)
+      (if (timestamp-expired? lockfile timeout-seconds)
+        (throw (ex-info "Cloner process dead (lock expired)" {}))
+        (do
+          (Thread/Sleep 1000)
+          (recur))))))
+
 (defn ensure-git-dir
-  "Ensure the bare git dir for the specified url, return the path to the git dir."
+  "Ensure the bare git dir for the specified url, return the path to the git dir.
+   
+   Uses lock-file-based coordination to prevent race conditions when multiple processes
+   attempt to clone the same repository simultaneously. The algorithm:
+   
+   1. Fast path: If git dir exists and no lock file, return immediately
+   2. Try to acquire lock by atomically creating lock file
+   3. If lock acquired: clone repo, update timestamp, release lock
+   4. If lock held by another process: wait for clone, update timestamp, check for expiry
+   
+   The lock file contains a timestamp that both the cloner and waiting processes update
+   every second. If the timestamp becomes >10 seconds old, it indicates a dead process
+   and an exception is thrown."
   [url]
   (let [git-dir-file (git-dir url)
-        config-file (cio/file-info git-dir-file "config")]                                        ;;; jio/file
-    (when-not (.Exists config-file)                                                               ;;; .exists
-      (git-clone-bare url git-dir-file))
-    (.FullName git-dir-file)))                                                                    ;;; .getCanonicalPath
+        config-file (cio/file-info git-dir-file "config")
+        lockfile (str (.FullName git-dir-file) ".lock")
+        timeout-seconds 10]
+    ;; Fast path: if config exists and no lock file, we're done
+    (if (and (.Exists config-file) (not (System.IO.File/Exists lockfile)))
+      (.FullName git-dir-file)
+      ;; Otherwise, coordinate the clone
+      (if (acquire-lock lockfile)
+        ;; We acquired the lock - we are responsible for cloning
+        (try
+          (when-not (.Exists config-file)
+            (clone-with-timestamp-updates url git-dir-file lockfile timeout-seconds))
+          (.FullName git-dir-file)
+          (finally
+            (release-lock lockfile)))
+        ;; Another process holds the lock - wait for clone to complete
+        (do
+          (when (:gitlibs/debug @config/CONFIG)
+            (printerrln "Waiting for another process to complete clone of:" url))
+          (try
+            (wait-for-clone-completion config-file lockfile timeout-seconds)
+            (.FullName git-dir-file)
+            (catch Exception e
+              (throw e))))))))
 
 (defn git-checkout
   [git-dir-path ^DirectoryInfo lib-dir ^String rev]                                               ;;; ^File
