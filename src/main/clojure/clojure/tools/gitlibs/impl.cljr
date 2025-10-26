@@ -173,11 +173,8 @@
     (str/join "/" dir-parts)))
 
 (defn git-dir
-  "Get the git directory for a URL. Optionally accepts a config map."
-  (^DirectoryInfo [url]                                                                            ;;; ^File
-   (git-dir @config/CONFIG url))
-  (^DirectoryInfo [config url]
-   (cio/dir-info (:gitlibs/dir config) "_repos" (clean-url url))))                          ;;; jio/file
+  ^DirectoryInfo [url]                                                                            ;;; ^File
+  (cio/dir-info (:gitlibs/dir @config/CONFIG) "_repos" (clean-url url)))                          ;;; jio/file
 
 (defn- lock-dir
   "Returns the directory where lock files are stored."
