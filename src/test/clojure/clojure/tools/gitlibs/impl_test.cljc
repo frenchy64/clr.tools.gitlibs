@@ -107,7 +107,7 @@
   (testing "Won race: delete lockfile when git dir deleted causes waiter to throw"
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
-          _ (Environment/SetEnvironmentVariable "GITLIBS" temp-gitlibs)
+          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)]
@@ -126,7 +126,7 @@
         (let [waiter-result (atom nil)
               waiter (future
                        (try
-                         (reset! waiter-result (impl/ensure-git-dir test-url))
+                         (reset! waiter-result (impl/ensure-git-dir test-config test-url))
                          (catch Exception e
                            (reset! waiter-result {:error (.Message e)}))))]
           
@@ -152,7 +152,6 @@
         
         (finally
           ;; Cleanup temp directory
-          (Environment/SetEnvironmentVariable "GITLIBS" nil)
           (when (Directory/Exists temp-gitlibs)
             (Directory/Delete temp-gitlibs true))))))))
 
@@ -161,7 +160,7 @@
   (testing "Won race: delete lockfile when git dir exists causes waiter to return normally"
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
-          _ (Environment/SetEnvironmentVariable "GITLIBS" temp-gitlibs)
+          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)]
@@ -181,7 +180,7 @@
         (let [waiter-result (atom nil)
               waiter (future
                        (try
-                         (reset! waiter-result (impl/ensure-git-dir test-url))
+                         (reset! waiter-result (impl/ensure-git-dir test-config test-url))
                          (catch Exception e
                            (reset! waiter-result {:error (.Message e)}))))]
           
@@ -205,7 +204,6 @@
         
         (finally
           ;; Cleanup temp directory
-          (Environment/SetEnvironmentVariable "GITLIBS" nil)
           (when (Directory/Exists temp-gitlibs)
             (Directory/Delete temp-gitlibs true)))))))
 
@@ -214,7 +212,7 @@
   (testing "Won race: stop updating lockfile causes waiter to throw after 10 seconds"
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
-          _ (Environment/SetEnvironmentVariable "GITLIBS" temp-gitlibs)
+          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)]
@@ -233,7 +231,7 @@
         (let [waiter-result (atom nil)
               waiter (future
                        (try
-                         (reset! waiter-result (impl/ensure-git-dir test-url))
+                         (reset! waiter-result (impl/ensure-git-dir test-config test-url))
                          (catch Exception e
                            (reset! waiter-result {:error (.Message e)}))))]
           
@@ -258,7 +256,6 @@
         
         (finally
           ;; Cleanup temp directory
-          (Environment/SetEnvironmentVariable "GITLIBS" nil)
           (when (Directory/Exists temp-gitlibs)
             (Directory/Delete temp-gitlibs true)))))))
 
@@ -267,7 +264,7 @@
   (testing "Git dir exists and lockfile doesn't - fast path"
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
-          _ (Environment/SetEnvironmentVariable "GITLIBS" temp-gitlibs)
+          test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
           git-dir-path (get-git-dir-path temp-gitlibs test-url)]
@@ -285,7 +282,7 @@
         
         ;; Call ensure-git-dir - should take fast path
         (let [start-time (DateTime/Now)
-              result (impl/ensure-git-dir test-url)
+              result (impl/ensure-git-dir test-config test-url)
               elapsed (.TotalMilliseconds (.Subtract (DateTime/Now) start-time))]
           
           ;; Should return successfully with the git dir path
@@ -296,7 +293,6 @@
         
         (finally
           ;; Cleanup temp directory
-          (Environment/SetEnvironmentVariable "GITLIBS" nil)
           (when (Directory/Exists temp-gitlibs)
             (Directory/Delete temp-gitlibs true)))))))
 
