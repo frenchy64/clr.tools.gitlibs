@@ -13,9 +13,9 @@
     [clojure.string :as str]
     [clojure.tools.gitlibs.config :as config])
   (:import
-    [System DateTime]
+    [System DateTime Environment]
     [System.Diagnostics ProcessStartInfo Process]                               ;;; [java.lang ProcessBuilder$Redirect]
-    [System.IO Stream StringWriter FileInfo DirectoryInfo Path IOException]     ;;; [java.io File FilenameFilter InputStream IOException StringWriter]
+    [System.IO Stream StringWriter FileInfo DirectoryInfo Path IOException Directory]     ;;; [java.io File FilenameFilter InputStream IOException StringWriter]
     [System.Threading Thread ThreadStart]))
 (set! *warn-on-reflection* true)
 
@@ -175,6 +175,23 @@
   ^DirectoryInfo [url]                                                                            ;;; ^File
   (cio/dir-info (:gitlibs/dir @config/CONFIG) "_repos" (clean-url url)))                          ;;; jio/file
 
+(defn- lock-dir
+  "Returns the directory where lock files are stored."
+  ^DirectoryInfo []
+  (cio/dir-info (:gitlibs/dir @config/CONFIG) "_locks"))
+
+(defn- lockfile-for-git-dir
+  "Returns the lockfile path for a given git directory."
+  ^String [^DirectoryInfo git-dir-file]
+  (let [lock-dir-path (lock-dir)
+        ;; Ensure lock directory exists
+        _ (when-not (.Exists lock-dir-path)
+            (Directory/CreateDirectory (.FullName lock-dir-path)))
+        ;; Create a safe filename from the git dir path
+        git-dir-name (.Replace (.FullName git-dir-file) (System.IO.Path/DirectorySeparatorChar) (char \_))
+        git-dir-name (.Replace git-dir-name (System.IO.Path/AltDirectorySeparatorChar) (char \_))]
+    (System.IO.Path/Join (.FullName lock-dir-path) (str git-dir-name ".lock"))))
+
 (defn git-try-fetch
   "Try to fetch and return the error code (0=success)"
   [^FileInfo git-dir]                                                                             ;;; ^File
@@ -205,7 +222,7 @@
 
 (defn- clone-with-timestamp-updates
   "Clones the repo to the target directory while updating the lock file timestamp every second.
-   Throws if the timestamp expires or clone fails."
+   Throws if the timestamp expires or clone fails. On failure, deletes the git dir."
   [url ^DirectoryInfo git-dir ^String lockfile timeout-seconds]
   (printerrln "Cloning:" url)
   (let [git-path (.FullName git-dir)
@@ -222,12 +239,22 @@
             (reset! clone-result exit)
             (when-not (zero? exit)
               (let [err (capture (.StandardError proc))]
+                ;; Clean up partial clone before throwing
+                (when (.Exists git-dir)
+                  (try
+                    (Directory/Delete git-path true)
+                    (catch Exception _)))
                 (throw (ex-info (format "Unable to clone %s%n%s" git-path err) {:exit exit :err err})))))
           (do
             (write-ts lockfile)
             (if (timestamp-expired? lockfile timeout-seconds)
               (do
                 (.Kill proc)
+                ;; Clean up partial clone before throwing
+                (when (.Exists git-dir)
+                  (try
+                    (Directory/Delete git-path true)
+                    (catch Exception _)))
                 (throw (ex-info "Clone timed out (lock expired)" {:url url :git-path git-path})))
               (do
                 (Thread/Sleep 1000)
@@ -236,12 +263,17 @@
         (try
           (.Kill proc)
           (catch Exception _))
+        ;; Clean up partial clone before re-throwing
+        (when (.Exists git-dir)
+          (try
+            (Directory/Delete git-path true)
+            (catch Exception _)))
         (throw e)))))
 
 (defn- wait-for-clone-completion
   "Waits for the clone to complete by checking if the git dir config file exists.
    Updates the lock file timestamp every second while waiting.
-   Throws if the lock file timestamp expires."
+   Throws if the lock file timestamp expires or if git dir doesn't exist after lock is released."
   [^String config-file-path ^String lockfile timeout-seconds]
   (loop []
     (when-not (System.IO.File/Exists config-file-path)
@@ -250,7 +282,10 @@
         (throw (ex-info "Cloner process dead (lock expired)" {}))
         (do
           (Thread/Sleep 1000)
-          (recur))))))
+          (recur)))))
+  ;; After lock is released, verify the git dir was successfully created
+  (when-not (System.IO.File/Exists config-file-path)
+    (throw (ex-info "Clone failed - git directory not created" {}))))
 
 (defn ensure-git-dir
   "Ensure the bare git dir for the specified url, return the path to the git dir.
@@ -270,7 +305,7 @@
   (let [git-dir-file (git-dir url)
         config-file (cio/file-info git-dir-file "config")
         config-file-path (.FullName config-file)
-        lockfile (str (.FullName git-dir-file) ".lock")
+        lockfile (lockfile-for-git-dir git-dir-file)
         timeout-seconds 10]
     ;; Fast path: if config exists and no lock file, we're done
     (if (and (.Exists config-file) (not (System.IO.File/Exists lockfile)))
@@ -363,3 +398,25 @@
     (when-not (zero? exit)
       (throw (ex-info (format "Unable to get tags %s%n%s" git-dir err) ret)))
     (remove str/blank? (str/split-lines out))))
+
+(defn -main
+  "Main entry point for command-line invocation.
+   Usage: cljr -M -m clojure.tools.gitlibs.impl <git-url>
+   Ensures the git directory for the given URL and prints the result path."
+  [& args]
+  (when (empty? args)
+    (binding [*out* *err*]
+      (println "Usage: cljr -M -m clojure.tools.gitlibs.impl <git-url>"))
+    (Environment/Exit 1))
+  (try
+    (let [url (first args)
+          result (ensure-git-dir url)]
+      (println result)
+      (flush)
+      (Environment/Exit 0))
+    (catch Exception e
+      (binding [*out* *err*]
+        (println "Error:" (.Message e))
+        (when-let [data (ex-data e)]
+          (println "Data:" data)))
+      (Environment/Exit 1))))
