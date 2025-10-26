@@ -200,6 +200,7 @@
   (testing "Won race: delete lockfile when git dir deleted causes waiter to throw"
     (let [test-url "https://github.com/clojure/spec.alpha.git"
           temp-gitlibs (create-temp-gitlibs-dir)
+          ;; TODO use with-redefs to establish in each test
           test-config (assoc @clojure.tools.gitlibs.config/CONFIG :gitlibs/dir temp-gitlibs)
           lockfile (get-lockfile temp-gitlibs test-url)
           config-file-path (get-config-file-path temp-gitlibs test-url)
