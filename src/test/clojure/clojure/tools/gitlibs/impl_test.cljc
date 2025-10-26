@@ -221,7 +221,7 @@
         ;; Start a waiter thread with mock git
         (let [waiter-exception (atom nil)
               waiter (future
-                       (with-redefs [impl/run-git-with-config handler]
+                       (with-redefs [impl/run-git handler]
                          (try
                            (impl/ensure-git-dir test-config test-url)
                            (catch Exception e
